@@ -1,32 +1,34 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
   <defs>
     <style>
-      .bg { fill: #f7f9fb; }
-      .title { font: 700 44px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #152238; }
-      .subtitle { font: 400 20px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #506174; }
-      .section-title { font: 700 26px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #18283a; }
-      .box-title { font: 700 23px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172337; }
-      .box-body { font: 400 18px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #415165; }
-      .small { font: 400 16px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #506174; }
-      .label { font: 700 15px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #ffffff; letter-spacing: 0; }
-      .card { fill: #ffffff; stroke: #d8e1ea; stroke-width: 1.4; rx: 8; }
-      .card-blue { fill: #eef6ff; stroke: #80aee0; stroke-width: 1.6; rx: 8; }
-      .card-green { fill: #eef8f4; stroke: #70b89f; stroke-width: 1.6; rx: 8; }
-      .card-amber { fill: #fff6e5; stroke: #d9a545; stroke-width: 1.6; rx: 8; }
-      .card-red { fill: #fff1ef; stroke: #d9897f; stroke-width: 1.6; rx: 8; }
-      .card-purple { fill: #f3f0ff; stroke: #9b88d8; stroke-width: 1.6; rx: 8; }
-      .line { stroke: #73859a; stroke-width: 2.4; fill: none; }
-      .line-blue { stroke: #2f73b8; stroke-width: 2.8; fill: none; }
-      .line-green { stroke: #2f8f76; stroke-width: 2.8; fill: none; }
-      .dash { stroke-dasharray: 8 8; }
+      .bg { fill: #f6f8fb; }
+      .panel { fill: #ffffff; stroke: #d8e0ea; stroke-width: 1.4; }
+      .title { font: 700 46px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #142235; }
+      .subtitle { font: 400 22px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #516273; }
+      .section { font: 700 25px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #1a2b3d; }
+      .box-title { font: 700 22px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172337; }
+      .body { font: 400 18px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #405268; }
+      .small { font: 400 16px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #516273; }
+      .label { font: 700 15px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #ffffff; }
+      .tag { font: 700 14px "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #ffffff; }
+      .card { fill: #ffffff; stroke: #d7e0ea; stroke-width: 1.3; }
+      .blue { fill: #eef6ff; stroke: #7fb0df; stroke-width: 1.5; }
+      .green { fill: #eef8f4; stroke: #6fb39c; stroke-width: 1.5; }
+      .amber { fill: #fff6e6; stroke: #d7a64f; stroke-width: 1.5; }
+      .violet { fill: #f2f0ff; stroke: #9787d8; stroke-width: 1.5; }
+      .red { fill: #fff0ef; stroke: #d9887d; stroke-width: 1.5; }
+      .ink { stroke: #697a8d; stroke-width: 2.4; fill: none; }
+      .blue-line { stroke: #2f73b8; stroke-width: 2.8; fill: none; }
+      .green-line { stroke: #2f8f76; stroke-width: 2.8; fill: none; }
+      .dash { stroke-dasharray: 8 7; }
       .pill-blue { fill: #2f73b8; }
       .pill-green { fill: #2f8f76; }
       .pill-amber { fill: #b7791f; }
+      .pill-violet { fill: #715bb8; }
       .pill-red { fill: #b44e45; }
-      .pill-purple { fill: #715bb8; }
     </style>
     <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
-      <path d="M2,2 L12,7 L2,12 Z" fill="#73859a"/>
+      <path d="M2,2 L12,7 L2,12 Z" fill="#697a8d"/>
     </marker>
     <marker id="arrow-blue" markerWidth="14" markerHeight="14" refX="11" refY="7" orient="auto">
       <path d="M2,2 L12,7 L2,12 Z" fill="#2f73b8"/>
@@ -36,169 +38,181 @@
     </marker>
   </defs>
 
-  <rect class="bg" width="1600" height="900"/>
+  <rect class="bg" width="1920" height="1080"/>
 
-  <text class="title" x="72" y="78">CareerAgent 面向学生个人职业发展的多智能体系统框架图</text>
-  <text class="subtitle" x="72" y="116">基于 Vue + FastAPI + LangGraph，结合短期/长期记忆、上下文压缩、Qwen 与 DeepSeek 模型协作</text>
+  <text class="title" x="80" y="78">CareerAgent MVP v2.1 严格多 Agent 本地演示架构</text>
+  <text class="subtitle" x="80" y="116">以 /api/runs 驱动真实 LangGraph StateGraph，使用 AgentSpec 权限、渐进式 Skill、短长期记忆、Artifact-first JSON 和模型 Provider DTO</text>
 
-  <rect x="70" y="150" width="1460" height="660" rx="10" fill="#ffffff" stroke="#d6e0ea" stroke-width="1.2"/>
+  <rect class="panel" x="70" y="150" width="1780" height="830" rx="10"/>
 
-  <text class="section-title" x="105" y="198">一、学生使用入口</text>
-  <rect class="card-blue" x="105" y="220" width="250" height="166"/>
-  <rect class="pill-blue" x="123" y="238" width="88" height="28" rx="14"/>
-  <text class="label" x="144" y="258">前端</text>
-  <text class="box-title" x="123" y="292">Vue 学生端</text>
-  <text class="box-body" x="123" y="318">
-    <tspan x="123" dy="0">画像填写 / 简历上传</tspan>
-    <tspan x="123" dy="25">岗位匹配 / 路径规划</tspan>
-    <tspan x="123" dy="25">训练 / 面试 / 报告</tspan>
+  <text class="section" x="105" y="198">1. 学生端主流程</text>
+  <rect class="blue" x="105" y="220" width="320" height="190" rx="8"/>
+  <rect class="pill-blue" x="125" y="240" width="128" height="30" rx="15"/>
+  <text class="label" x="145" y="261">Vue 3 / Vite</text>
+  <text class="box-title" x="125" y="302">学生 Demo Loop</text>
+  <text class="body" x="125" y="333">
+    <tspan x="125" dy="0">画像 / 岗位 / 匹配</tspan>
+    <tspan x="125" dy="28">训练提交 / 三轮面试</tspan>
+    <tspan x="125" dy="28">Markdown 报告导出</tspan>
   </text>
 
-  <text class="section-title" x="430" y="198">二、业务服务层</text>
-  <rect class="card-green" x="430" y="220" width="255" height="166"/>
-  <rect class="pill-green" x="448" y="238" width="92" height="28" rx="14"/>
-  <text class="label" x="470" y="258">后端</text>
-  <text class="box-title" x="448" y="292">FastAPI 应用层</text>
-  <text class="box-body" x="448" y="318">
-    <tspan x="448" dy="0">REST API / 文件上传</tspan>
-    <tspan x="448" dy="25">会话管理 / 报告导出</tspan>
-    <tspan x="448" dy="25">JSON 数据读写</tspan>
+  <text class="section" x="500" y="198">2. FastAPI 业务入口</text>
+  <rect class="green" x="500" y="220" width="330" height="190" rx="8"/>
+  <rect class="pill-green" x="520" y="240" width="108" height="30" rx="15"/>
+  <text class="label" x="545" y="261">后端 API</text>
+  <text class="box-title" x="520" y="302">POST /api/runs</text>
+  <text class="body" x="520" y="333">
+    <tspan x="520" dy="0">thread_id 安全校验</tspan>
+    <tspan x="520" dy="28">thin wrapper / CORS</tspan>
+    <tspan x="520" dy="28">报告按 thread 过滤</tspan>
   </text>
 
-  <text class="section-title" x="760" y="198">三、多智能体编排层</text>
-  <rect class="card-purple" x="760" y="220" width="405" height="166"/>
-  <rect class="pill-purple" x="778" y="238" width="114" height="28" rx="14"/>
-  <text class="label" x="801" y="258">编排运行时</text>
-  <text class="box-title" x="778" y="292">LangGraph Runtime</text>
-  <text class="box-body" x="778" y="318">
-    <tspan x="778" dy="0">Supervisor 路由 / Agent 子图</tspan>
-    <tspan x="778" dy="25">状态图 / 条件跳转 / handoff</tspan>
-    <tspan x="778" dy="25">checkpoint / 上下文压缩</tspan>
+  <text class="section" x="905" y="198">3. LangGraph 严格多 Agent Runtime</text>
+  <rect class="violet" x="905" y="220" width="520" height="190" rx="8"/>
+  <rect class="pill-violet" x="925" y="240" width="132" height="30" rx="15"/>
+  <text class="label" x="948" y="261">StateGraph</text>
+  <text class="box-title" x="925" y="302">StateGraph Runtime</text>
+  <text class="body" x="925" y="333">
+    <tspan x="925" dy="0">START -> Supervisor -> Agent -> END</tspan>
+    <tspan x="925" dy="28">checkpointer + config.thread_id</tspan>
+    <tspan x="925" dy="28">conditional edges + get_state restore</tspan>
   </text>
 
-  <text class="section-title" x="1225" y="198">四、模型与数据支撑</text>
-  <rect class="card-amber" x="1225" y="220" width="270" height="166"/>
-  <rect class="pill-amber" x="1243" y="238" width="108" height="28" rx="14"/>
-  <text class="label" x="1262" y="258">模型接口</text>
-  <text class="box-title" x="1243" y="292">Model Provider</text>
-  <text class="box-body" x="1243" y="318">
-    <tspan x="1243" dy="0">Qwen 生成与表达整理</tspan>
-    <tspan x="1243" dy="25">DeepSeek 诊断与复核</tspan>
-    <tspan x="1243" dy="25">关键节点思考模式</tspan>
+  <text class="section" x="1490" y="198">4. 模型 Provider</text>
+  <rect class="amber" x="1490" y="220" width="315" height="190" rx="8"/>
+  <rect class="pill-amber" x="1510" y="240" width="118" height="30" rx="15"/>
+  <text class="label" x="1532" y="261">Model DTO</text>
+  <text class="box-title" x="1510" y="302">Provider DTO</text>
+  <text class="body" x="1510" y="333">
+    <tspan x="1510" dy="0">Qwen：表达 / 报告</tspan>
+    <tspan x="1510" dy="28">DeepSeek：诊断 / 评分</tspan>
+    <tspan x="1510" dy="28">thinking / reasoning 映射</tspan>
   </text>
 
-  <path class="line-blue" d="M355 303 H430" marker-end="url(#arrow-blue)"/>
-  <path class="line-blue" d="M685 303 H760" marker-end="url(#arrow-blue)"/>
-  <path class="line-blue" d="M1165 303 H1225" marker-end="url(#arrow-blue)"/>
+  <path class="blue-line" d="M425 315 H500" marker-end="url(#arrow-blue)"/>
+  <path class="blue-line" d="M830 315 H905" marker-end="url(#arrow-blue)"/>
+  <path class="blue-line" d="M1425 315 H1490" marker-end="url(#arrow-blue)"/>
 
-  <rect class="card" x="105" y="410" width="605" height="238"/>
-  <text class="section-title" x="130" y="452">学生职业规划主流程</text>
+  <rect class="card" x="105" y="455" width="690" height="265" rx="8"/>
+  <text class="section" x="130" y="497">学生职业发展闭环</text>
   <g>
-    <rect class="card-blue" x="130" y="478" width="155" height="92"/>
-    <text class="box-title" x="154" y="513">建立画像</text>
-    <text class="small" x="154" y="542">简历 / 表单</text>
+    <rect class="blue" x="130" y="525" width="165" height="78" rx="8"/>
+    <text class="box-title" x="158" y="558">画像</text>
+    <text class="small" x="158" y="586">Profile Artifact</text>
 
-    <rect class="card-blue" x="315" y="478" width="155" height="92"/>
-    <text class="box-title" x="339" y="513">岗位匹配</text>
-    <text class="small" x="339" y="542">预置 / 自定义 JD</text>
+    <rect class="blue" x="320" y="525" width="165" height="78" rx="8"/>
+    <text class="box-title" x="348" y="558">岗位</text>
+    <text class="small" x="348" y="586">JobAnalysis</text>
 
-    <rect class="card-blue" x="500" y="478" width="155" height="92"/>
-    <text class="box-title" x="524" y="513">路径规划</text>
-    <text class="small" x="524" y="542">阶段目标 / 行动</text>
+    <rect class="green" x="510" y="525" width="165" height="78" rx="8"/>
+    <text class="box-title" x="538" y="558">匹配</text>
+    <text class="small" x="538" y="586">Match + gaps</text>
 
-    <path class="line" d="M285 524 H315" marker-end="url(#arrow)"/>
-    <path class="line" d="M470 524 H500" marker-end="url(#arrow)"/>
+    <path class="ink" d="M295 564 H320" marker-end="url(#arrow)"/>
+    <path class="ink" d="M485 564 H510" marker-end="url(#arrow)"/>
 
-    <rect class="card-green" x="130" y="595" width="155" height="92"/>
-    <text class="box-title" x="154" y="630">任务训练</text>
-    <text class="small" x="154" y="659">提交 / AI 评分</text>
+    <rect class="green" x="130" y="630" width="165" height="78" rx="8"/>
+    <text class="box-title" x="158" y="663">规划</text>
+    <text class="small" x="158" y="691">Plan Artifact</text>
 
-    <rect class="card-green" x="315" y="595" width="155" height="92"/>
-    <text class="box-title" x="339" y="630">模拟面试</text>
-    <text class="small" x="339" y="659">追问 / 反馈</text>
+    <rect class="amber" x="320" y="630" width="165" height="78" rx="8"/>
+    <text class="box-title" x="348" y="663">训练提交</text>
+    <text class="small" x="348" y="691">Answer -> score</text>
 
-    <rect class="card-green" x="500" y="595" width="155" height="92"/>
-    <text class="box-title" x="524" y="630">个人报告</text>
-    <text class="small" x="524" y="659">Markdown 导出</text>
+    <rect class="amber" x="510" y="630" width="165" height="78" rx="8"/>
+    <text class="box-title" x="538" y="663">三轮面试</text>
+    <text class="small" x="538" y="691">3 answers -> summary</text>
 
-    <path class="line" d="M577 570 V595" marker-end="url(#arrow)"/>
-    <path class="line" d="M285 641 H315" marker-end="url(#arrow)"/>
-    <path class="line" d="M470 641 H500" marker-end="url(#arrow)"/>
+    <path class="ink" d="M592 603 V630" marker-end="url(#arrow)"/>
+    <path class="ink" d="M295 669 H320" marker-end="url(#arrow)"/>
+    <path class="ink" d="M485 669 H510" marker-end="url(#arrow)"/>
+
+    <rect class="red" x="700" y="577" width="70" height="92" rx="8"/>
+    <text class="box-title" x="714" y="614">报告</text>
+    <text class="small" x="714" y="642">MD</text>
+    <path class="ink" d="M675 669 H700" marker-end="url(#arrow)"/>
   </g>
 
-  <rect class="card" x="760" y="410" width="735" height="238"/>
-  <text class="section-title" x="785" y="452">多 Agent 团队</text>
+  <rect class="card" x="845" y="455" width="470" height="265" rx="8"/>
+  <text class="section" x="870" y="497">AgentSpec + Runtime 权限</text>
+  <rect class="violet" x="870" y="525" width="195" height="78" rx="8"/>
+  <text class="box-title" x="894" y="558">AgentManifest</text>
+  <text class="small" x="894" y="586">目标 / 工具 / handoff</text>
+  <rect class="violet" x="1090" y="525" width="195" height="78" rx="8"/>
+  <text class="box-title" x="1114" y="558">Runtime Context</text>
+  <text class="small" x="1114" y="586">权限代理</text>
+  <path class="ink dash" d="M1065 564 H1090" marker-end="url(#arrow)"/>
+  <rect class="red" x="870" y="630" width="125" height="70" rx="8"/>
+  <text class="box-title" x="893" y="660">read</text>
+  <text class="small" x="893" y="684">memory</text>
+  <rect class="red" x="1015" y="630" width="125" height="70" rx="8"/>
+  <text class="box-title" x="1038" y="660">write</text>
+  <text class="small" x="1038" y="684">artifact</text>
+  <rect class="red" x="1160" y="630" width="125" height="70" rx="8"/>
+  <text class="box-title" x="1183" y="660">handoff</text>
+  <text class="small" x="1183" y="684">allowed only</text>
+
+  <rect class="card" x="1365" y="455" width="440" height="265" rx="8"/>
+  <text class="section" x="1390" y="497">多 Agent 团队</text>
   <g>
-    <rect class="card-purple" x="785" y="478" width="158" height="74"/>
-    <text class="box-title" x="811" y="511">Supervisor</text>
-    <text class="small" x="811" y="538">理解意图 / 路由</text>
-
-    <rect class="card-amber" x="970" y="478" width="158" height="74"/>
-    <text class="box-title" x="995" y="511">Memory</text>
-    <text class="small" x="995" y="538">检索 / 压缩 / 写回</text>
-
-    <rect class="card-blue" x="1155" y="478" width="158" height="74"/>
-    <text class="box-title" x="1180" y="511">Profile</text>
-    <text class="small" x="1180" y="538">画像 / 证据链</text>
-
-    <rect class="card-blue" x="1335" y="478" width="135" height="74"/>
-    <text class="box-title" x="1358" y="511">Job</text>
-    <text class="small" x="1358" y="538">岗位画像</text>
-
-    <rect class="card-green" x="785" y="584" width="130" height="74"/>
-    <text class="box-title" x="806" y="617">Match</text>
-    <text class="small" x="806" y="644">差距诊断</text>
-
-    <rect class="card-green" x="945" y="584" width="130" height="74"/>
-    <text class="box-title" x="966" y="617">Planning</text>
-    <text class="small" x="966" y="644">阶段路线</text>
-
-    <rect class="card-green" x="1105" y="584" width="130" height="74"/>
-    <text class="box-title" x="1126" y="617">Training</text>
-    <text class="small" x="1126" y="644">任务评分</text>
-
-    <rect class="card-green" x="1265" y="584" width="130" height="74"/>
-    <text class="box-title" x="1286" y="617">Interview</text>
-    <text class="small" x="1286" y="644">追问反馈</text>
-
-    <rect class="card-green" x="1420" y="584" width="50" height="74"/>
-    <text class="box-title" x="1429" y="617">报告</text>
-    <text class="small" x="1430" y="644">导出</text>
-
-    <path class="line dash" d="M943 515 H970" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M1128 515 H1155" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M1313 515 H1335" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M864 552 V584" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M1010 552 V584" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M1234 552 L1170 584" marker-end="url(#arrow)"/>
-    <path class="line dash" d="M1402 552 L1330 584" marker-end="url(#arrow)"/>
+    <rect class="violet" x="1390" y="525" width="130" height="58" rx="8"/>
+    <text class="small" x="1413" y="558">Supervisor</text>
+    <rect class="amber" x="1540" y="525" width="130" height="58" rx="8"/>
+    <text class="small" x="1563" y="558">Memory</text>
+    <rect class="blue" x="1690" y="525" width="90" height="58" rx="8"/>
+    <text class="small" x="1716" y="558">Job</text>
+    <rect class="blue" x="1390" y="610" width="90" height="58" rx="8"/>
+    <text class="small" x="1410" y="643">Profile</text>
+    <rect class="green" x="1500" y="610" width="90" height="58" rx="8"/>
+    <text class="small" x="1520" y="643">Match</text>
+    <rect class="green" x="1610" y="610" width="90" height="58" rx="8"/>
+    <text class="small" x="1628" y="643">Plan</text>
+    <rect class="green" x="1710" y="610" width="70" height="58" rx="8"/>
+    <text class="small" x="1718" y="643">Train</text>
+    <rect class="green" x="1500" y="685" width="130" height="58" rx="8"/>
+    <text class="small" x="1522" y="718">Interview</text>
+    <rect class="green" x="1650" y="685" width="130" height="58" rx="8"/>
+    <text class="small" x="1676" y="718">Report</text>
+    <path class="ink dash" d="M1520 554 H1540" marker-end="url(#arrow)"/>
+    <path class="ink dash" d="M1670 554 H1690" marker-end="url(#arrow)"/>
+    <path class="ink dash" d="M1455 583 V610" marker-end="url(#arrow)"/>
+    <path class="ink dash" d="M1605 583 L1545 610" marker-end="url(#arrow)"/>
+    <path class="ink dash" d="M1735 583 L1655 610" marker-end="url(#arrow)"/>
   </g>
 
-  <rect class="card-red" x="105" y="710" width="330" height="76"/>
-  <rect class="pill-red" x="125" y="730" width="104" height="28" rx="14"/>
-  <text class="label" x="145" y="750">短期记忆</text>
-  <text class="box-body" x="245" y="750">对话、任务、面试上下文</text>
+  <rect class="card" x="105" y="765" width="405" height="135" rx="8"/>
+  <text class="section" x="130" y="807">渐进式 Skill Loading</text>
+  <rect class="pill-blue" x="130" y="825" width="105" height="30" rx="15"/>
+  <text class="tag" x="153" y="846">Skill refs</text>
+  <text class="body" x="252" y="846">按 agent / task / budget 加载</text>
+  <text class="small" x="130" y="880">snapshot 只保存 Skill ID / version / key output</text>
 
-  <rect class="card-red" x="470" y="710" width="360" height="76"/>
-  <rect class="pill-red" x="490" y="730" width="104" height="28" rx="14"/>
-  <text class="label" x="510" y="750">长期记忆</text>
-  <text class="box-body" x="610" y="750">画像、证据、成长轨迹</text>
+  <rect class="card" x="545" y="765" width="410" height="135" rx="8"/>
+  <text class="section" x="570" y="807">Memory + Context Compression</text>
+  <rect class="pill-red" x="570" y="825" width="140" height="30" rx="15"/>
+  <text class="tag" x="592" y="846">Memory Manager</text>
+  <text class="body" x="727" y="846">长期记忆候选、确认写入</text>
+  <text class="small" x="570" y="880">不持久化隐藏推理；压缩后继续对话</text>
 
-  <rect class="card-amber" x="865" y="710" width="300" height="76"/>
-  <rect class="pill-amber" x="885" y="730" width="118" height="28" rx="14"/>
-  <text class="label" x="905" y="750">上下文压缩</text>
-  <text class="box-body" x="1018" y="750">目标、决策、状态</text>
+  <rect class="card" x="990" y="765" width="390" height="135" rx="8"/>
+  <text class="section" x="1015" y="807">Artifact-first JSON Store</text>
+  <rect class="pill-green" x="1015" y="825" width="120" height="30" rx="15"/>
+  <text class="tag" x="1035" y="846">thread_id</text>
+  <text class="body" x="1150" y="846">kind / source / parents</text>
+  <text class="small" x="1015" y="880">报告只读取同一 thread 的 required artifact kinds</text>
 
-  <rect class="card-green" x="1200" y="710" width="295" height="76"/>
-  <rect class="pill-green" x="1220" y="730" width="102" height="28" rx="14"/>
-  <text class="label" x="1240" y="750">JSON 数据</text>
-  <text class="box-body" x="1335" y="750">demo/runtime/reports</text>
+  <rect class="card" x="1415" y="765" width="390" height="135" rx="8"/>
+  <text class="section" x="1440" y="807">合并门禁</text>
+  <rect class="pill-amber" x="1440" y="825" width="126" height="30" rx="15"/>
+  <text class="tag" x="1462" y="846">Verification</text>
+  <text class="body" x="1580" y="846">checkpoint / thread 隔离</text>
+  <text class="small" x="1440" y="880">训练答案 + 三轮面试后才允许报告 200</text>
 
-  <path class="line-green" d="M270 710 V648" marker-end="url(#arrow-green)"/>
-  <path class="line-green" d="M650 710 V648" marker-end="url(#arrow-green)"/>
-  <path class="line-green" d="M1015 710 V648" marker-end="url(#arrow-green)"/>
-  <path class="line-green" d="M1347 710 V648" marker-end="url(#arrow-green)"/>
+  <path class="green-line" d="M307 765 V720" marker-end="url(#arrow-green)"/>
+  <path class="green-line" d="M750 765 V720" marker-end="url(#arrow-green)"/>
+  <path class="green-line" d="M1185 765 V720" marker-end="url(#arrow-green)"/>
+  <path class="green-line" d="M1610 765 V720" marker-end="url(#arrow-green)"/>
 
-  <text class="subtitle" x="92" y="846">说明：学生端发起职业规划任务；FastAPI 负责业务接口；LangGraph 协调严格多 Agent；Memory Manager 管理记忆与上下文压缩。</text>
-  <text class="subtitle" x="92" y="876">模型层调用 Qwen 与 DeepSeek；数据以 JSON 本地持久化，后续可迁移到数据库或服务器部署。</text>
+  <text class="subtitle" x="92" y="958">实现顺序：Task 1-5 建架构骨架；Task 6 先证明真实 LangGraph + checkpoint + runtime 权限；Task 7/8 再接 API、训练、三轮面试和报告。</text>
+  <text class="subtitle" x="92" y="996">演示口径：页面看到的是职业发展闭环，评审看到的是 handoff trace、Skill refs、Artifact chain、CompactionSnapshot 和 thread 隔离证据。</text>
 </svg>

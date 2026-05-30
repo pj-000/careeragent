@@ -727,7 +727,13 @@ class AgentRuntime(Protocol):
     def load_skills(self, agent_id: str, task_type: str) -> list[str]:
         ...
 
-    def save_artifact(self, kind: str, payload: dict, source_agent: str, parents: list[str]) -> str:
+    def save_artifact(
+        self,
+        kind: str,
+        artifact_id: str,
+        payload: dict,
+        parent_artifact_ids: list[str] | None = None,
+    ) -> str:
         ...
 
 
@@ -1589,6 +1595,8 @@ compiled.invoke(
 )
 ```
 
+`run_career_graph()` must not create a fresh isolated in-memory checkpointer per request. For the local MVP, use a module-level cached compiled graph/checkpointer so repeated `/api/runs` calls in the same process share LangGraph thread state. Service restart recovery can rely on the JSON Artifact chain; a JSON or SQLite checkpointer can replace the in-memory checkpointer later.
+
 No `graph_kind == "langgraph"` marker is sufficient evidence by itself.
 
 - [ ] **Step 4: Implement runtime permission enforcement**
@@ -1830,15 +1838,26 @@ git commit -m "Add graph-backed API entrypoints"
 Append to `/Users/sss/careeragent/backend/tests/test_api_e2e.py`:
 
 ```python
-def test_backend_loop_creates_report_from_artifacts() -> None:
-    thread_id = "api-thread-loop"
-    for message in [
-        "我会 Python FastAPI，想匹配 Agent 开发岗位",
+def complete_demo_messages(marker: str | None = None) -> list[str]:
+    prefix = "我会 Python FastAPI，想匹配 Agent 开发岗位"
+    if marker:
+        prefix = f"{prefix}，唯一标记 {marker}"
+    return [
+        prefix,
         "生成三个月路径规划",
         "根据能力差距给我一个训练任务",
+        "我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。",
         "开始模拟面试",
+        "回答1：我会用 StateGraph 定义节点和条件边。",
+        "回答2：我会用 thread_id 和 checkpointer 保留会话状态。",
+        "回答3：我会把评分结果保存为 Artifact 并进入报告。",
         "请导出 Markdown 报告",
-    ]:
+    ]
+
+
+def test_backend_loop_creates_report_from_artifacts() -> None:
+    thread_id = "api-thread-loop"
+    for message in complete_demo_messages():
         response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
         assert response.status_code == 200
 
@@ -1852,13 +1871,7 @@ def test_report_is_thread_isolated() -> None:
     thread_a = "api-thread-a"
     thread_b = "api-thread-b"
     for thread_id, marker in [(thread_a, "A-ONLY"), (thread_b, "B-ONLY")]:
-        for message in [
-            f"我会 Python FastAPI，想匹配 Agent 开发岗位，唯一标记 {marker}",
-            "生成三个月路径规划",
-            "根据能力差距给我一个训练任务",
-            "开始模拟面试",
-            "请导出 Markdown 报告",
-        ]:
+        for message in complete_demo_messages(marker):
             response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
             assert response.status_code == 200
 
@@ -1869,23 +1882,14 @@ def test_report_is_thread_isolated() -> None:
     assert "B-ONLY" not in report_a.text
 
     repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
-    assert all(item["source_thread_id"] == thread_a for item in repo.list_by_thread(thread_a))
+    report_artifact = repo.get(f"report-{thread_a}-latest")
+    for parent_id in report_artifact["parent_artifact_ids"]:
+        assert repo.get(parent_id)["source_thread_id"] == thread_a
 
 
 def test_training_submission_and_three_turn_interview_are_artifact_backed() -> None:
     thread_id = "api-thread-training-interview"
-    messages = [
-        "我会 Python FastAPI，想匹配 Agent 开发岗位",
-        "生成三个月路径规划",
-        "根据能力差距给我一个训练任务",
-        "我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。",
-        "开始模拟面试",
-        "回答1：我会用 StateGraph 定义节点和条件边。",
-        "回答2：我会用 thread_id 和 checkpointer 保留会话状态。",
-        "回答3：我会把评分结果保存为 Artifact 并进入报告。",
-    ]
-
-    for message in messages:
+    for message in complete_demo_messages():
         response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
         assert response.status_code == 200
 
