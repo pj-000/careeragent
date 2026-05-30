@@ -360,6 +360,9 @@ backend/
 
 主要 API：
 
+MVP v2 编码阶段以 `POST /api/runs` 作为统一 Agent runtime 入口。画像、岗位、报告等接口可以作为 thin wrapper 或便捷读取接口存在，但所有会触发 Agent 协作、记忆读写、Skill 加载和上下文压缩的动作都应进入 LangGraph runtime。下面的业务 API 是目标形态；完整拆分可作为 Phase 2 扩展。
+
+- `POST /api/runs`：统一触发 LangGraph 多 Agent 运行，输入 `thread_id` 和用户消息，返回当前 Agent、handoff trace、Skill refs、Artifact IDs、下一步建议和告警。
 - `POST /api/profiles/parse-resume`：上传或粘贴简历内容，生成画像草稿。
 - `GET /api/profiles/{profile_id}`：获取学生画像。
 - `PATCH /api/profiles/{profile_id}`：编辑学生画像。
@@ -387,6 +390,9 @@ data/
     jobs.json
     training_tasks.json
   runtime/
+    artifacts/
+      <artifact_id>.json
+    artifacts-index.json
     profiles/
       <profile_id>.json
     jobs/
@@ -405,8 +411,11 @@ data/
       <report_id>.md
 ```
 
+MVP v2 可以先以 `runtime/artifacts/` 作为统一持久化入口，所有画像、岗位分析、匹配、计划、训练、面试、压缩快照和报告都作为带 `kind` 的 Artifact 保存。`profiles/`、`jobs/` 等分目录是后续迁移到领域仓储、SQLite 或数据库表时的目标结构；业务代码不应直接依赖具体 JSON 路径。
+
 核心对象：
 
+- `Artifact`：MVP v2 运行时统一产物，必须包含 `kind`、`source_thread_id`、`source_agent`、`parent_artifact_ids`、`created_at`、`updated_at` 和业务 `payload`。本地 JSON 可以先统一存为 artifacts，未来再迁移到分目录、SQLite 或数据库表。
 - `StudentProfile`：个人信息、教育经历、技能、经历、偏好、目标和证据链。
 - `JobProfile`：岗位名称、职责、能力要求、工具、评价维度和来源 JD。
 - `MatchResult`：匹配分、优势、短板、证据和提升优先级。
@@ -421,8 +430,36 @@ data/
 Agent 通过模型路由器调用模型，不直接访问具体 provider API。
 
 ```python
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+ThinkingMode = Literal["off", "auto", "on"]
+ReasoningEffort = Literal["low", "medium", "high", "max"]
+
+
+class ModelRequest(BaseModel):
+    messages: list[dict[str, str]]
+    response_schema: dict[str, Any] | None = None
+    thinking_mode: ThinkingMode = "auto"
+    reasoning_effort: ReasoningEffort = "medium"
+    tool_policy: str = "none"
+    response_format: str = "json"
+    provider_options: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelResponse(BaseModel):
+    content: str
+    reasoning_content: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+    model: str
+    finish_reason: str = "stop"
+
+
 class ModelProvider:
-    async def generate(self, messages, schema=None, thinking=True, model=None):
+    async def generate(self, request: ModelRequest) -> ModelResponse:
         ...
 ```
 
@@ -437,7 +474,7 @@ Provider：
 - DeepSeek：岗位分析、匹配诊断、复核、面试追问、评分和第二意见。
 - Qwen + DeepSeek：重要规划和报告路径可采用一个模型生成、另一个模型复核。
 
-结构化输出使用 Pydantic schema 校验。若模型输出不符合 schema，后端执行一次格式修复调用；仍失败则返回结构化错误。
+结构化输出使用 Pydantic schema 校验。若模型输出不符合 schema，后端执行一次格式修复调用；仍失败则返回结构化错误。Qwen 和 DeepSeek 的 thinking 参数、reasoning 字段和工具调用语义由各自 provider adapter 映射；业务层只传 `thinking_mode`、`reasoning_effort` 和 `provider_options`，不直接透传 provider 私有参数。
 
 ## 错误处理
 
@@ -543,20 +580,16 @@ MVP 完成时，本地用户应能：
 
 ## 建议实现顺序
 
-1. 搭建项目骨架：FastAPI 后端、Vue 前端、统一开发脚本。
-2. 实现 JSON Repository 和 Pydantic schemas。
-3. 实现 Skill Registry、Skill Loader 和首批 Markdown Skills。
-4. 实现 ModelProvider 和 mock provider 测试。
-5. 准备两个演示学生和预置岗位数据。
-6. 实现职业画像流程。
-7. 实现岗位分析和匹配诊断。
-8. 实现路径规划。
-9. 实现场景化对话栏和短期记忆。
-10. 实现任务生成和评分。
-11. 实现模拟面试。
-12. 实现长期记忆和上下文压缩快照。
-13. 实现 Markdown 报告生成。
-14. 完整演示验证和界面打磨。
+1. 搭建项目骨架、JSON Repository、安全路径和本地数据目录。
+2. 实现 `AgentSpec`、`CareerAgentState`、Artifact schema 和 Agent runtime 权限边界。
+3. 实现 provider-neutral `ModelRequest` / `ModelResponse`、MockProvider、Qwen/DeepSeek adapter。
+4. 实现 Skill Registry、Skill Loader 和首批 Markdown Skills。
+5. 实现 Memory Manager、长期记忆候选确认机制和上下文压缩快照。
+6. 先实现一条真实 LangGraph 纵向闭环：StateGraph、节点、条件边、checkpoint、thread_id 恢复和 Agent handoff trace。
+7. 在图运行时稳定后，再实现 FastAPI `/api/runs` 和画像/岗位/报告 thin wrapper。
+8. 实现训练、面试和报告 Artifact 链路。
+9. 实现 Vue 单页主流程和右侧 Agent runtime 面板。
+10. 完整演示验证、浏览器联调和界面打磨。
 
 ## 设计状态
 

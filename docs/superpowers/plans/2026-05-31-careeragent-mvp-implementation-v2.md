@@ -16,6 +16,8 @@ The first implementation plan captured the full product surface, but its task or
 
 This V2 supersedes `/Users/sss/careeragent/docs/superpowers/plans/2026-05-30-careeragent-mvp-implementation.md` for implementation. The old plan remains useful as a detailed inventory of pages and schemas, but execution must follow this V2 order.
 
+**V2.1 review patch:** A second review accepted V2 as the main plan but found that several acceptance gates were still too loose. This document now applies the V2.1 patch: LangGraph must be compiled and invoked through the real runtime with `thread_id`, AgentSpec permissions must be enforced at runtime, report generation must be thread-filtered and artifact-backed, and final E2E checks must not be the first place those constraints appear.
+
 ## Review Resolution Matrix
 
 | Review item | V2 response |
@@ -28,6 +30,9 @@ This V2 supersedes `/Users/sss/careeragent/docs/superpowers/plans/2026-05-30-car
 | P1: JSON needs migration boundary | Task 1 adds domain repositories and JSON implementations with `schema_version`, atomic write, and index files. |
 | P1: training/interview/report must use artifacts | Tasks 7 and 8 define `Artifact` chain and force report generation from existing artifacts. |
 | P2: E2E validation missing | Task 11 adds an end-to-end API test covering the full loop and state restore from JSON. |
+| V2.1 P0: LangGraph acceptance too loose | Task 6 now forbids "normal function plus marker" implementations. It requires `StateGraph`, `START`, `END`, `compile(checkpointer=...)`, and `graph.invoke(..., config={"configurable": {"thread_id": thread_id}})`. |
+| V2.1 P0: AgentSpec not enforced | Task 6 adds `AgentRuntimeContext` permission checks for tools, memory scopes, and handoff targets. |
+| V2.1 P0: Report can mix threads | Tasks 1 and 8 require `source_thread_id`, `source_agent`, `parent_artifact_ids`, `list_by_thread()`, required artifact-chain checks, and a two-thread report isolation test. |
 
 ## Non-Negotiable MVP Runtime Contract
 
@@ -42,6 +47,10 @@ The implementation is acceptable only if these runtime facts are true:
 - Context compression writes structured `CompactionSnapshot` records and never stores full hidden reasoning.
 - Qwen and DeepSeek providers receive provider-specific thinking parameters only inside provider adapters.
 - Markdown reports are assembled from prior artifacts, not from an unrelated one-shot summary.
+- `build_graph()` must construct a real LangGraph `StateGraph` with named agent nodes, at least one conditional edge, and a checkpointer. `run_career_graph()` must invoke the compiled graph with `config={"configurable": {"thread_id": thread_id}}`.
+- Runtime cannot trust AgentSpec as documentation only. `AgentRuntimeContext` must reject disallowed tool calls, memory writes, and handoff targets.
+- Every persisted artifact must include `kind`, `source_thread_id`, `source_agent`, `parent_artifact_ids`, `created_at`, and `updated_at`.
+- Report export must query artifacts by `thread_id` and must fail structurally if required artifact kinds are missing.
 
 ## Planned File Structure
 
@@ -63,6 +72,7 @@ The implementation is acceptable only if these runtime facts are true:
         reports.py
       agents/
         base.py
+        runtime.py
         manifests.py
         profile.py
         job.py
@@ -241,22 +251,38 @@ def test_json_repository_writes_schema_version_and_index(tmp_path: Path) -> None
     saved = repo.save(
         kind="profile",
         artifact_id="profile-1",
+        source_thread_id="thread-a",
+        source_agent="profile",
+        parent_artifact_ids=[],
         payload={"name": "林晨", "skills": ["Python", "FastAPI"]},
     )
 
     assert saved["schema_version"] == 1
     assert saved["id"] == "profile-1"
     assert saved["kind"] == "profile"
+    assert saved["source_thread_id"] == "thread-a"
+    assert saved["source_agent"] == "profile"
+    assert saved["parent_artifact_ids"] == []
     assert repo.get("profile-1")["payload"]["name"] == "林晨"
-    index = repo.list(kind="profile")
-    assert index == [{"id": "profile-1", "kind": "profile"}]
+    index = repo.list(kind="profile", thread_id="thread-a")
+    assert index == [{"id": "profile-1", "kind": "profile", "source_thread_id": "thread-a", "source_agent": "profile"}]
+
+
+def test_json_repository_filters_by_thread_and_kind(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    repo.save("match", "match-a", {"score": 82}, source_thread_id="thread-a", source_agent="match")
+    repo.save("match", "match-b", {"score": 61}, source_thread_id="thread-b", source_agent="match")
+    repo.save("plan", "plan-a", {"title": "三个月计划"}, source_thread_id="thread-a", source_agent="planning")
+
+    assert [item["id"] for item in repo.list_by_thread("thread-a")] == ["match-a", "plan-a"]
+    assert [item["id"] for item in repo.list_by_kind("thread-a", "match")] == ["match-a"]
 
 
 def test_json_repository_blocks_path_traversal(tmp_path: Path) -> None:
     repo = JsonArtifactRepository(tmp_path)
 
     try:
-        repo.save(kind="profile", artifact_id="../bad", payload={})
+        repo.save(kind="profile", artifact_id="../bad", payload={}, source_thread_id="thread-a", source_agent="profile")
     except ValueError as exc:
         assert "Invalid artifact_id" in str(exc)
     else:
@@ -286,7 +312,15 @@ from typing import Any
 
 class ArtifactRepository(ABC):
     @abstractmethod
-    def save(self, kind: str, artifact_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def save(
+        self,
+        kind: str,
+        artifact_id: str,
+        payload: dict[str, Any],
+        source_thread_id: str,
+        source_agent: str,
+        parent_artifact_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -294,8 +328,28 @@ class ArtifactRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list(self, kind: str | None = None) -> list[dict[str, str]]:
+    def list(self, kind: str | None = None, thread_id: str | None = None) -> list[dict[str, str]]:
         raise NotImplementedError
+
+    @abstractmethod
+    def list_by_thread(self, thread_id: str) -> list[dict[str, str]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_kind(self, thread_id: str, kind: str) -> list[dict[str, str]]:
+        raise NotImplementedError
+
+
+class ThreadRepository(ABC):
+    """Boundary for future database-backed thread state persistence."""
+
+
+class MemoryRepository(ABC):
+    """Boundary for future database-backed long-term memory persistence."""
+
+
+class ReportRepository(ABC):
+    """Boundary for future database-backed report persistence."""
 ```
 
 Write `/Users/sss/careeragent/backend/app/repositories/paths.py`:
@@ -333,7 +387,15 @@ class JsonArtifactRepository(ArtifactRepository):
         self.index_path = root / "artifacts-index.json"
         self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, kind: str, artifact_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def save(
+        self,
+        kind: str,
+        artifact_id: str,
+        payload: dict[str, Any],
+        source_thread_id: str,
+        source_agent: str,
+        parent_artifact_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         self._validate_id(artifact_id)
         now = datetime.now(timezone.utc).isoformat()
         current = self.get(artifact_id) if self._path_for(artifact_id).exists() else None
@@ -341,6 +403,9 @@ class JsonArtifactRepository(ArtifactRepository):
             "schema_version": 1,
             "id": artifact_id,
             "kind": kind,
+            "source_thread_id": source_thread_id,
+            "source_agent": source_agent,
+            "parent_artifact_ids": parent_artifact_ids or [],
             "payload": payload,
             "created_at": current["created_at"] if current else now,
             "updated_at": now,
@@ -354,14 +419,30 @@ class JsonArtifactRepository(ArtifactRepository):
         with self._path_for(artifact_id).open("r", encoding="utf-8") as f:
             return json.load(f)
 
-    def list(self, kind: str | None = None) -> list[dict[str, str]]:
+    def list(self, kind: str | None = None, thread_id: str | None = None) -> list[dict[str, str]]:
         records = []
         for path in sorted(self.artifact_dir.glob("*.json")):
             with path.open("r", encoding="utf-8") as f:
                 record = json.load(f)
-            if kind is None or record["kind"] == kind:
-                records.append({"id": record["id"], "kind": record["kind"]})
+            if kind is not None and record["kind"] != kind:
+                continue
+            if thread_id is not None and record["source_thread_id"] != thread_id:
+                continue
+            records.append(
+                {
+                    "id": record["id"],
+                    "kind": record["kind"],
+                    "source_thread_id": record["source_thread_id"],
+                    "source_agent": record["source_agent"],
+                }
+            )
         return records
+
+    def list_by_thread(self, thread_id: str) -> list[dict[str, str]]:
+        return self.list(thread_id=thread_id)
+
+    def list_by_kind(self, thread_id: str, kind: str) -> list[dict[str, str]]:
+        return self.list(kind=kind, thread_id=thread_id)
 
     def _path_for(self, artifact_id: str) -> Path:
         return self.artifact_dir / f"{artifact_id}.json"
@@ -532,6 +613,7 @@ Write `/Users/sss/careeragent/backend/app/schemas/artifacts.py`:
 from __future__ import annotations
 
 from typing import Any, Literal
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
@@ -556,6 +638,8 @@ class Artifact(BaseModel):
     source_agent: str
     source_thread_id: str
     parent_artifact_ids: list[str] = Field(default_factory=list)
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 ```
 
 Write `/Users/sss/careeragent/backend/app/schemas/runs.py`:
@@ -758,7 +842,7 @@ def test_deepseek_maps_thinking_mode_to_provider_options() -> None:
 
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["thinking"] == {"type": "enabled"}
-    assert payload["reasoning_effort"] == "medium"
+    assert payload["reasoning_effort"] == "high"
 ```
 
 - [ ] **Step 2: Run the failing provider tests**
@@ -784,7 +868,7 @@ from pydantic import BaseModel, Field
 
 
 ThinkingMode = Literal["off", "auto", "on"]
-ReasoningEffort = Literal["low", "medium", "high"]
+ReasoningEffort = Literal["low", "medium", "high", "max"]
 
 
 class ModelRequest(BaseModel):
@@ -891,11 +975,13 @@ class DeepSeekProvider(ModelProvider):
         self.model = model
 
     def build_payload(self, request: ModelRequest) -> dict:
+        deepseek_effort = request.provider_options.get("deepseek_effort")
+        reasoning_effort = deepseek_effort or ("max" if request.reasoning_effort == "max" else "high")
         payload = {
             "model": self.model,
             "messages": request.messages,
             "thinking": {"type": "enabled"} if request.thinking_mode == "on" else {"type": "disabled"},
-            "reasoning_effort": request.reasoning_effort,
+            "reasoning_effort": reasoning_effort,
         }
         payload.update(request.provider_options)
         return payload
@@ -1305,6 +1391,7 @@ git commit -m "Add memory and compaction contracts"
 **Files:**
 - Create: `/Users/sss/careeragent/backend/app/graphs/checkpoints.py`
 - Create: `/Users/sss/careeragent/backend/app/graphs/workflow.py`
+- Create: `/Users/sss/careeragent/backend/app/agents/runtime.py`
 - Create: `/Users/sss/careeragent/backend/app/agents/supervisor.py`
 - Create: `/Users/sss/careeragent/backend/app/agents/profile.py`
 - Create: `/Users/sss/careeragent/backend/app/agents/job.py`
@@ -1323,8 +1410,24 @@ Write `/Users/sss/careeragent/backend/tests/test_graph_vertical_slice.py`:
 ```python
 from pathlib import Path
 
-from app.graphs.workflow import run_career_graph
+import pytest
+
+from app.agents.manifests import AGENT_MANIFESTS
+from app.agents.runtime import AgentRuntimeContext, PermissionDenied
+from app.graphs.workflow import build_graph, run_career_graph
 from app.repositories.json_repository import JsonArtifactRepository
+
+
+def test_build_graph_compiles_real_langgraph_with_required_nodes(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+
+    assert callable(getattr(graph, "invoke", None))
+    graph_view = graph.get_graph()
+    node_names = set(graph_view.nodes)
+    for required in {"supervisor", "match", "planning", "training", "interview", "report", "memory_manager"}:
+        assert required in node_names
+    assert "conditional" in str(graph_view.edges).lower() or "branch" in str(graph_view.edges).lower()
 
 
 def test_graph_runs_real_handoff_and_persists_artifacts(tmp_path: Path) -> None:
@@ -1341,7 +1444,7 @@ def test_graph_runs_real_handoff_and_persists_artifacts(tmp_path: Path) -> None:
     assert response.agent_trace_summary
     assert response.used_skill_refs
     assert response.artifacts
-    assert repo.list()
+    assert repo.list_by_thread("thread-graph-1")
 
 
 def test_graph_uses_same_thread_for_followup(tmp_path: Path) -> None:
@@ -1352,6 +1455,18 @@ def test_graph_uses_same_thread_for_followup(tmp_path: Path) -> None:
     assert first.thread_id == second.thread_id
     assert len(second.agent_trace_summary) >= 1
     assert second.artifacts
+    assert repo.list_by_thread("thread-graph-2")
+
+
+def test_runtime_enforces_agent_manifest_permissions(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    runtime = AgentRuntimeContext(thread_id="t1", manifest=AGENT_MANIFESTS["match"], artifact_repo=repo)
+
+    with pytest.raises(PermissionDenied):
+        runtime.write_memory_candidate({"scope": "profile", "fact": "Match Agent 不可直接写长期画像"})
+
+    with pytest.raises(PermissionDenied):
+        runtime.handoff_to("report")
 ```
 
 - [ ] **Step 2: Run the failing graph tests**
@@ -1375,9 +1490,79 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: JsonArtifactRe
     ...
 ```
 
-The implementation must compile a `StateGraph` when LangGraph is available. If local LangGraph API shape differs, wrap the graph creation in `build_graph()` and keep tests focused on the public contract plus a `graph_kind == "langgraph"` marker returned from runtime diagnostics.
+The implementation must be a real LangGraph runtime, not a normal function with a marker field. `workflow.py` must import:
 
-- [ ] **Step 4: Add conditional handoff**
+```python
+from langgraph.graph import END, START, StateGraph
+```
+
+`build_graph()` must create named nodes for `supervisor`, every business agent, and `memory_manager`, register at least one conditional edge, and compile with a checkpointer:
+
+```python
+compiled = builder.compile(checkpointer=checkpointer)
+```
+
+`run_career_graph()` must invoke the compiled graph with thread config:
+
+```python
+compiled.invoke(
+    initial_state,
+    config={"configurable": {"thread_id": thread_id}},
+)
+```
+
+No `graph_kind == "langgraph"` marker is sufficient evidence by itself.
+
+- [ ] **Step 4: Implement runtime permission enforcement**
+
+Write `/Users/sss/careeragent/backend/app/agents/runtime.py`:
+
+```python
+from __future__ import annotations
+
+from app.repositories.json_repository import JsonArtifactRepository
+from app.schemas.agents import AgentManifest
+
+
+class PermissionDenied(RuntimeError):
+    pass
+
+
+class AgentRuntimeContext:
+    def __init__(self, thread_id: str, manifest: AgentManifest, artifact_repo: JsonArtifactRepository) -> None:
+        self.thread_id = thread_id
+        self.manifest = manifest
+        self.artifact_repo = artifact_repo
+
+    def save_artifact(self, kind: str, artifact_id: str, payload: dict, parent_artifact_ids: list[str] | None = None) -> str:
+        self._require_tool("artifact_write")
+        self.artifact_repo.save(
+            kind=kind,
+            artifact_id=artifact_id,
+            payload=payload,
+            source_thread_id=self.thread_id,
+            source_agent=self.manifest.agent_id,
+            parent_artifact_ids=parent_artifact_ids or [],
+        )
+        return artifact_id
+
+    def write_memory_candidate(self, candidate: dict) -> dict:
+        scope = candidate.get("scope")
+        if scope not in self.manifest.writable_memory_scopes:
+            raise PermissionDenied(f"{self.manifest.agent_id} cannot write memory scope {scope}")
+        return candidate
+
+    def handoff_to(self, target_agent: str) -> str:
+        if target_agent not in self.manifest.handoff_policy.allowed_targets:
+            raise PermissionDenied(f"{self.manifest.agent_id} cannot hand off to {target_agent}")
+        return target_agent
+
+    def _require_tool(self, tool_name: str) -> None:
+        if tool_name not in self.manifest.allowed_tools:
+            raise PermissionDenied(f"{self.manifest.agent_id} cannot use tool {tool_name}")
+```
+
+- [ ] **Step 5: Add conditional handoff**
 
 Supervisor routing rules:
 
@@ -1395,7 +1580,7 @@ default -> match
 
 Each business agent must hand off to `memory_manager` before the run ends. `memory_manager` decides whether to compact state and returns final `RunResponse`.
 
-- [ ] **Step 5: Run graph tests**
+- [ ] **Step 6: Run graph tests**
 
 Run:
 
@@ -1405,7 +1590,7 @@ cd backend && pytest tests/test_graph_vertical_slice.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit graph vertical slice**
+- [ ] **Step 7: Commit graph vertical slice**
 
 Run:
 
@@ -1485,11 +1670,19 @@ Modify `/Users/sss/careeragent/backend/app/main.py`:
 
 ```python
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.runs import router as runs_router
 
 
 app = FastAPI(title="CareerAgent MVP")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(runs_router)
 
 
@@ -1551,6 +1744,26 @@ def test_backend_loop_creates_report_from_artifacts() -> None:
     assert report.status_code == 200
     assert "# CareerAgent 职业发展报告" in report.text
     assert "能力差距" in report.text
+
+
+def test_report_is_thread_isolated() -> None:
+    thread_a = "api-thread-a"
+    thread_b = "api-thread-b"
+    for thread_id, marker in [(thread_a, "A-ONLY"), (thread_b, "B-ONLY")]:
+        for message in [
+            f"我会 Python FastAPI，想匹配 Agent 开发岗位，唯一标记 {marker}",
+            "生成三个月路径规划",
+            "根据能力差距给我一个训练任务",
+            "开始模拟面试",
+            "请导出 Markdown 报告",
+        ]:
+            response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
+            assert response.status_code == 200
+
+    report_a = client.get(f"/api/reports/{thread_a}/markdown")
+
+    assert report_a.status_code == 200
+    assert "B-ONLY" not in report_a.text
 ```
 
 - [ ] **Step 2: Implement Markdown report builder**
@@ -1561,24 +1774,41 @@ Write `/Users/sss/careeragent/backend/app/artifacts/markdown.py`:
 from __future__ import annotations
 
 
+class MissingArtifactError(ValueError):
+    pass
+
+
 def build_markdown_report(thread_id: str, artifacts: list[dict]) -> str:
+    by_kind = {artifact["kind"]: artifact for artifact in artifacts}
+    required = ["profile", "job_analysis", "match", "plan", "training_result", "interview_summary"]
+    missing = [kind for kind in required if kind not in by_kind]
+    if missing:
+        raise MissingArtifactError(f"Missing required artifacts for {thread_id}: {', '.join(missing)}")
+
+    profile = by_kind["profile"]["payload"]
+    job = by_kind["job_analysis"]["payload"]
+    match = by_kind["match"]["payload"]
+    plan = by_kind["plan"]["payload"]
+    training = by_kind["training_result"]["payload"]
+    interview = by_kind["interview_summary"]["payload"]
+
     sections = [
         "# CareerAgent 职业发展报告",
         f"- Thread ID: `{thread_id}`",
         "## 学生画像摘要",
-        "基于当前本地演示数据生成。",
+        profile.get("summary", "画像摘要缺失"),
         "## 目标岗位",
-        "Agent 开发工程师或学生自定义 JD。",
+        job.get("title", "目标岗位缺失"),
         "## 匹配结论",
-        "系统根据 Profile、JobAnalysis 和 Match Artifact 汇总。",
+        match.get("summary", "匹配结论缺失"),
         "## 能力差距",
-        "重点关注 LangGraph、LLM API、测试评估和项目证据链。",
+        "\n".join(f"- {gap}" for gap in match.get("gaps", [])),
         "## 三阶段路径",
-        "基础补齐、项目训练、面试表达。",
+        plan.get("summary", "路径规划缺失"),
         "## 训练表现",
-        "引用 TrainingResult Artifact。",
+        training.get("feedback", "训练反馈缺失"),
         "## 面试反馈",
-        "引用 InterviewSummary Artifact。",
+        interview.get("summary", "面试反馈缺失"),
         "## 下一步行动",
         "继续完成一个可展示的 Agent 项目并积累证据。",
     ]
@@ -1592,9 +1822,9 @@ Write `/Users/sss/careeragent/backend/app/api/reports.py`:
 ```python
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, HTTPException, Response
 
-from app.artifacts.markdown import build_markdown_report
+from app.artifacts.markdown import MissingArtifactError, build_markdown_report
 from app.repositories.json_repository import JsonArtifactRepository
 from app.repositories.paths import RUNTIME_DATA_DIR
 
@@ -1605,8 +1835,19 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 @router.get("/{thread_id}/markdown")
 def get_markdown_report(thread_id: str) -> Response:
     repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
-    artifacts = [repo.get(item["id"]) for item in repo.list()]
-    markdown = build_markdown_report(thread_id, artifacts)
+    artifacts = [repo.get(item["id"]) for item in repo.list_by_thread(thread_id)]
+    try:
+        markdown = build_markdown_report(thread_id, artifacts)
+    except MissingArtifactError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    repo.save(
+        kind="report",
+        artifact_id=f"report-{thread_id}",
+        payload={"markdown": markdown},
+        source_thread_id=thread_id,
+        source_agent="report",
+        parent_artifact_ids=[artifact["id"] for artifact in artifacts],
+    )
     return Response(markdown, media_type="text/markdown; charset=utf-8")
 ```
 
@@ -1769,8 +2010,13 @@ Write:
 
 ```dotenv
 QWEN_API_KEY=
+QWEN_BASE_URL=
+QWEN_MODEL=qwen3.6-plus
 DEEPSEEK_API_KEY=
+DEEPSEEK_BASE_URL=
+DEEPSEEK_MODEL=deepseek-v4-flash
 CAREERAGENT_MODEL_MODE=mock
+CAREERAGENT_DATA_DIR=data/runtime
 ```
 
 - [ ] **Step 4: Commit docs**
@@ -1797,6 +2043,11 @@ The final backend E2E test must prove:
 - `used_skill_refs` is non-empty.
 - A `compaction_snapshot` artifact is created after explicit compression or report generation.
 - Recreating the repository object from the same `data/runtime` path can read the artifacts.
+- Two different `thread_id` values do not leak artifacts into each other's Markdown reports.
+- `build_graph()` returns a compiled LangGraph object with `invoke()` and graph introspection; a marker string is not acceptable evidence.
+- Runtime permission tests prove unauthorized memory writes and handoffs raise `PermissionDenied`.
+- Training includes at least one submitted student answer and a scored `training_result` artifact.
+- Interview includes at least three turns and an `interview_summary` artifact.
 
 - [ ] **Step 2: Frontend build must pass**
 
