@@ -22,6 +22,7 @@ CareerAgent 是一个面向高校学生个人使用的职业发展智能体系�
 - 生成个性化职业发展路径。
 - 支持画像、匹配、规划、训练、面试、报告等场景化多轮对话。
 - 使用 LangGraph 实现严格多 Agent 架构。
+- 支持渐进式 Skill 加载，让 Agent 按任务按需加载领域能力。
 - 支持短期记忆、长期记忆和上下文压缩。
 - 支持虚拟职场任务生成、学生提交、AI 评分和反馈。
 - 支持文字为主的模拟面试、追问和评分。
@@ -76,7 +77,7 @@ MVP 内置两个学生样例：
 
 4. Agent 层
    - 每个 Agent 是相对独立的业务智能主体。
-   - 每个 Agent 都有目标、工具、私有上下文、记忆范围、输入输出协议和交接策略。
+   - 每个 Agent 都有目标、工具、私有上下文、记忆范围、Skill 加载范围、输入输出协议和交接策略。
 
 5. Memory 层
    - 区分短期对话/任务记忆和长期学生职业数字孪生记忆。
@@ -96,6 +97,7 @@ MVP 内置两个学生样例：
 - 与自身职责匹配的工具集合。
 - 私有短期上下文。
 - 有范围限制的长期记忆访问权限。
+- 渐进式 Skill 加载策略。
 - 结构化输入输出协议。
 - handoff 策略：什么时候追问学生、调用其他 Agent、交还给 Supervisor 或结束任务。
 
@@ -146,6 +148,81 @@ Agent 团队：
 协作示例：
 
 当学生问“我只有三个月，能不能转 Agent 开发？”时，Supervisor Agent 会判断需要读取画像、分析岗位、诊断差距和生成路径，然后依次或按需协调 Profile Agent、Job Agent、Match Agent、Planning Agent 和 Report Agent。如果画像证据不足，Profile Agent 可以先追问学生，而不是直接生成结论。
+
+## 渐进式 Skill 加载设计
+
+系统需要支持 Agent 按需加载 Skills。这里的 Skill 指“可被 Agent 读取和执行的领域能力包”，包含任务说明、提示词片段、工具说明、评分标准、输出格式、示例和注意事项。Skill 不等同于模型本身，也不等同于长期记忆；它更像可复用的专业操作手册。
+
+设计目标：
+
+- 控制上下文长度，避免所有 Agent 一开始加载全部领域知识。
+- 让不同 Agent 只加载与当前任务相关的 Skill。
+- 让职业规划、岗位分析、训练评分、面试反馈等能力可以独立迭代。
+- 让 Supervisor 能根据任务意图选择需要加载的 Skill。
+
+Skill 目录建议：
+
+```text
+skills/
+  profile/
+    resume_parsing.md
+    evidence_chain.md
+  job/
+    jd_analysis.md
+    agent_developer_role.md
+  match/
+    match_scoring_rubric.md
+    gap_diagnosis.md
+  planning/
+    career_path_planning.md
+    three_month_plan.md
+  training/
+    workplace_task_generation.md
+    submission_scoring.md
+  interview/
+    mock_interview_flow.md
+    answer_scoring.md
+  report/
+    markdown_report.md
+  memory/
+    long_term_write_policy.md
+    context_compaction.md
+```
+
+Skill 加载流程：
+
+1. Supervisor Agent 判断当前用户意图和任务阶段。
+2. Skill Registry 根据任务类型、目标岗位、当前 Agent 和上下文预算返回候选 Skill。
+3. Skill Loader 读取 Skill 的摘要、适用条件和必要片段。
+4. 当前 Agent 只接收本轮任务需要的 Skill 内容。
+5. 如果上下文预算不足，优先加载 Skill 摘要；必要时再按章节加载细节。
+6. Agent 输出中记录本轮使用过的 Skill ID，便于调试、复现和报告说明。
+
+Skill 加载策略：
+
+- Profile Agent 默认只加载简历解析和能力证据链 Skill。
+- Job Agent 在处理 Agent 开发岗位时加载 `agent_developer_role.md`；处理自定义 JD 时加载通用 JD 分析 Skill。
+- Match Agent 加载匹配评分和差距诊断 Skill。
+- Planning Agent 根据时间约束加载通用路径规划或三个月计划 Skill。
+- Training Agent 加载任务生成和提交评分 Skill。
+- Interview Agent 加载面试流程和回答评分 Skill。
+- Report Agent 加载 Markdown 报告 Skill。
+- Memory Manager 加载长期记忆写入规则和上下文压缩 Skill。
+
+Skill 与记忆的边界：
+
+- Skill 是稳定方法和规则，例如评分 Rubric、面试流程、报告模板。
+- 短期记忆是当前对话和任务状态。
+- 长期记忆是学生个人事实、偏好、能力证据和成长轨迹。
+- Skill 不应写入学生长期记忆；长期记忆也不应污染 Skill 内容。
+
+Skill 与上下文压缩的关系：
+
+- `CompactionSnapshot` 记录本轮使用过的 Skill ID 和版本。
+- 压缩后的对话恢复时，Skill Loader 可以根据 snapshot 重新加载必要 Skill。
+- 压缩产物只保留 Skill 使用结果，不复制完整 Skill 正文，减少上下文占用。
+
+MVP 可以先以 Markdown 文件实现 Skill Registry 和 Skill Loader。后续如果 Skill 数量变多，可增加元数据索引、版本号、标签检索和管理界面。
 
 ## 记忆设计
 
@@ -199,6 +276,7 @@ Agent 团队：
 - `decisions`：重要选择及其原因。
 - `module_state`：当前页面、相关对象 ID 和未完成任务。
 - `agent_notes`：各 Agent 可复用结论，不保存完整思考链。
+- `skill_refs`：本轮使用过的 Skill ID、版本和关键输出。
 - `open_questions`：缺失信息和阻塞点。
 - `next_actions`：建议下一步和可能调用的 Agent。
 - `source_index`：来源消息范围和对象 ID。
@@ -265,6 +343,7 @@ backend/
     memory/
     providers/
     services/
+    skills/
 ```
 
 模块职责：
@@ -277,6 +356,7 @@ backend/
 - `memory/`：短期记忆、长期记忆和上下文压缩。
 - `providers/`：Qwen 和 DeepSeek API 封装。
 - `services/`：简历解析、报告导出、文件处理和业务编排辅助逻辑。
+- `skills/`：Skill Registry、Skill Loader 和内置 Skill 文档。
 
 主要 API：
 
@@ -436,7 +516,8 @@ MVP 完成时，本地用户应能：
 9. 在画像、匹配、规划、训练、面试和报告场景下进行多轮对话。
 10. 将短期对话和长期职业数字孪生记忆保存到 JSON 文件。
 11. 触发上下文压缩，并能基于压缩快照继续对话。
-12. 生成并导出 Markdown 个人职业发展报告。
+12. 在不同 Agent 任务中按需加载对应 Skill，并在 snapshot 中记录 Skill 引用。
+13. 生成并导出 Markdown 个人职业发展报告。
 
 ## 风险与应对
 
@@ -464,17 +545,18 @@ MVP 完成时，本地用户应能：
 
 1. 搭建项目骨架：FastAPI 后端、Vue 前端、统一开发脚本。
 2. 实现 JSON Repository 和 Pydantic schemas。
-3. 实现 ModelProvider 和 mock provider 测试。
-4. 准备两个演示学生和预置岗位数据。
-5. 实现职业画像流程。
-6. 实现岗位分析和匹配诊断。
-7. 实现路径规划。
-8. 实现场景化对话栏和短期记忆。
-9. 实现任务生成和评分。
-10. 实现模拟面试。
-11. 实现长期记忆和上下文压缩快照。
-12. 实现 Markdown 报告生成。
-13. 完整演示验证和界面打磨。
+3. 实现 Skill Registry、Skill Loader 和首批 Markdown Skills。
+4. 实现 ModelProvider 和 mock provider 测试。
+5. 准备两个演示学生和预置岗位数据。
+6. 实现职业画像流程。
+7. 实现岗位分析和匹配诊断。
+8. 实现路径规划。
+9. 实现场景化对话栏和短期记忆。
+10. 实现任务生成和评分。
+11. 实现模拟面试。
+12. 实现长期记忆和上下文压缩快照。
+13. 实现 Markdown 报告生成。
+14. 完整演示验证和界面打磨。
 
 ## 设计状态
 
@@ -484,8 +566,8 @@ MVP 完成时，本地用户应能：
 - FastAPI + Vue。
 - JSON 文件存储。
 - LangGraph 严格多 Agent 架构。
+- 渐进式 Skill 加载。
 - 短期记忆和长期职业数字孪生记忆。
 - 参考编码 Agent 的上下文压缩机制。
 - 真实接入 Qwen 和 DeepSeek。
 - Markdown 报告优先，PDF 后续扩展。
-
