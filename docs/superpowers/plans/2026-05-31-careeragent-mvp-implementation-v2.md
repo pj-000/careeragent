@@ -33,6 +33,8 @@ This V2 supersedes `/Users/sss/careeragent/docs/superpowers/plans/2026-05-30-car
 | V2.1 P0: LangGraph acceptance too loose | Task 6 now forbids "normal function plus marker" implementations. It requires `StateGraph`, `START`, `END`, `compile(checkpointer=...)`, and `graph.invoke(..., config={"configurable": {"thread_id": thread_id}})`. |
 | V2.1 P0: AgentSpec not enforced | Task 6 adds `AgentRuntimeContext` permission checks for tools, memory scopes, and handoff targets. |
 | V2.1 P0: Report can mix threads | Tasks 1 and 8 require `source_thread_id`, `source_agent`, `parent_artifact_ids`, `list_by_thread()`, required artifact-chain checks, and a two-thread report isolation test. |
+| Execution gate: checkpoint restore | Task 6 adds a `graph.get_state(config)` checkpoint restore test before APIs can be built on top of the graph. |
+| Execution gate: training/interview are not static | Task 8 adds a training answer submission and three interview answers before report export. |
 
 ## Non-Negotiable MVP Runtime Contract
 
@@ -51,6 +53,8 @@ The implementation is acceptable only if these runtime facts are true:
 - Runtime cannot trust AgentSpec as documentation only. `AgentRuntimeContext` must reject disallowed tool calls, memory writes, and handoff targets.
 - Every persisted artifact must include `kind`, `source_thread_id`, `source_agent`, `parent_artifact_ids`, `created_at`, and `updated_at`.
 - Report export must query artifacts by `thread_id` and must fail structurally if required artifact kinds are missing.
+- Task 6 cannot merge until checkpoint restore is proven with `graph.get_state(config)` for the same `thread_id`.
+- Task 8 cannot merge until a submitted training answer creates `training_result` and at least three interview answers create `interview_summary`.
 
 ## Planned File Structure
 
@@ -843,6 +847,21 @@ def test_deepseek_maps_thinking_mode_to_provider_options() -> None:
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["thinking"] == {"type": "enabled"}
     assert payload["reasoning_effort"] == "high"
+
+
+def test_deepseek_internal_effort_option_does_not_leak_to_payload() -> None:
+    provider = DeepSeekProvider(api_key="test", model="deepseek-v4-flash")
+    payload = provider.build_payload(
+        ModelRequest(
+            messages=[],
+            thinking_mode="on",
+            provider_options={"deepseek_effort": "max", "temperature": 0.2},
+        )
+    )
+
+    assert payload["reasoning_effort"] == "max"
+    assert payload["temperature"] == 0.2
+    assert "deepseek_effort" not in payload
 ```
 
 - [ ] **Step 2: Run the failing provider tests**
@@ -975,7 +994,8 @@ class DeepSeekProvider(ModelProvider):
         self.model = model
 
     def build_payload(self, request: ModelRequest) -> dict:
-        deepseek_effort = request.provider_options.get("deepseek_effort")
+        options = dict(request.provider_options)
+        deepseek_effort = options.pop("deepseek_effort", None)
         reasoning_effort = deepseek_effort or ("max" if request.reasoning_effort == "max" else "high")
         payload = {
             "model": self.model,
@@ -983,7 +1003,7 @@ class DeepSeekProvider(ModelProvider):
             "thinking": {"type": "enabled"} if request.thinking_mode == "on" else {"type": "disabled"},
             "reasoning_effort": reasoning_effort,
         }
-        payload.update(request.provider_options)
+        payload.update(options)
         return payload
 
     def generate(self, request: ModelRequest) -> ModelResponse:
@@ -1018,7 +1038,35 @@ cd backend && pytest tests/test_model_providers.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit provider abstraction**
+- [ ] **Step 5: Add env-gated provider smoke tests**
+
+Append these tests to `/Users/sss/careeragent/backend/tests/test_model_providers.py`. They must skip when keys are absent, so local mock-mode development is not blocked:
+
+```python
+import os
+
+import pytest
+
+
+@pytest.mark.skipif(not os.getenv("QWEN_API_KEY"), reason="QWEN_API_KEY not set")
+def test_qwen_provider_smoke() -> None:
+    provider = QwenProvider(api_key=os.environ["QWEN_API_KEY"], model=os.getenv("QWEN_MODEL", "qwen3.6-plus"))
+    response = provider.generate(ModelRequest(messages=[{"role": "user", "content": "用 JSON 返回 {\"ok\": true}"}], thinking_mode="off"))
+    assert response.model
+    assert response.content
+
+
+@pytest.mark.skipif(not os.getenv("DEEPSEEK_API_KEY"), reason="DEEPSEEK_API_KEY not set")
+def test_deepseek_provider_smoke() -> None:
+    provider = DeepSeekProvider(api_key=os.environ["DEEPSEEK_API_KEY"], model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"))
+    response = provider.generate(ModelRequest(messages=[{"role": "user", "content": "用 JSON 返回 {\"ok\": true}"}], thinking_mode="off"))
+    assert response.model
+    assert response.content
+```
+
+The first implementation may keep these tests skipped in mock mode, but provider code must be structured so these smoke tests can pass when keys are provided.
+
+- [ ] **Step 6: Commit provider abstraction**
 
 Run:
 
@@ -1425,7 +1473,7 @@ def test_build_graph_compiles_real_langgraph_with_required_nodes(tmp_path: Path)
     assert callable(getattr(graph, "invoke", None))
     graph_view = graph.get_graph()
     node_names = set(graph_view.nodes)
-    for required in {"supervisor", "match", "planning", "training", "interview", "report", "memory_manager"}:
+    for required in {"supervisor", "profile", "job", "match", "planning", "training", "interview", "report", "memory_manager"}:
         assert required in node_names
     assert "conditional" in str(graph_view.edges).lower() or "branch" in str(graph_view.edges).lower()
 
@@ -1458,6 +1506,28 @@ def test_graph_uses_same_thread_for_followup(tmp_path: Path) -> None:
     assert repo.list_by_thread("thread-graph-2")
 
 
+def test_graph_checkpoint_restores_thread_state(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    config = {"configurable": {"thread_id": "thread-checkpoint-1"}}
+
+    graph.invoke(
+        {"thread_id": "thread-checkpoint-1", "user_message": "我会 FastAPI，先做岗位匹配"},
+        config=config,
+    )
+    snapshot = graph.get_state(config)
+    assert snapshot is not None
+    assert snapshot.values["thread_id"] == "thread-checkpoint-1"
+    assert snapshot.values["artifact_ids"]
+
+    graph.invoke(
+        {"thread_id": "thread-checkpoint-1", "user_message": "继续给我训练任务"},
+        config=config,
+    )
+    second_snapshot = graph.get_state(config)
+    assert len(second_snapshot.values["artifact_ids"]) >= len(snapshot.values["artifact_ids"])
+
+
 def test_runtime_enforces_agent_manifest_permissions(tmp_path: Path) -> None:
     repo = JsonArtifactRepository(tmp_path)
     runtime = AgentRuntimeContext(thread_id="t1", manifest=AGENT_MANIFESTS["match"], artifact_repo=repo)
@@ -1467,6 +1537,14 @@ def test_runtime_enforces_agent_manifest_permissions(tmp_path: Path) -> None:
 
     with pytest.raises(PermissionDenied):
         runtime.handoff_to("report")
+
+    with pytest.raises(PermissionDenied):
+        runtime.read_memory("private_notes")
+
+    report_runtime = AgentRuntimeContext(thread_id="t1", manifest=AGENT_MANIFESTS["report"], artifact_repo=repo)
+    assert report_runtime.list_artifacts(kind="match") == []
+    with pytest.raises(PermissionDenied):
+        report_runtime.write_memory_candidate({"scope": "profile", "fact": "Report Agent 不可写长期画像"})
 ```
 
 - [ ] **Step 2: Run the failing graph tests**
@@ -1546,6 +1624,17 @@ class AgentRuntimeContext:
         )
         return artifact_id
 
+    def list_artifacts(self, kind: str | None = None) -> list[dict[str, str]]:
+        self._require_tool("artifact_read")
+        if kind:
+            return self.artifact_repo.list_by_kind(self.thread_id, kind)
+        return self.artifact_repo.list_by_thread(self.thread_id)
+
+    def read_memory(self, scope: str) -> list[dict]:
+        if scope not in self.manifest.readable_memory_scopes:
+            raise PermissionDenied(f"{self.manifest.agent_id} cannot read memory scope {scope}")
+        return []
+
     def write_memory_candidate(self, candidate: dict) -> dict:
         scope = candidate.get("scope")
         if scope not in self.manifest.writable_memory_scopes:
@@ -1579,6 +1668,8 @@ default -> match
 ```
 
 Each business agent must hand off to `memory_manager` before the run ends. `memory_manager` decides whether to compact state and returns final `RunResponse`.
+
+The `memory_manager` node must call `compact_state()` when a module switches or before report generation, then persist the result through `AgentRuntimeContext.save_artifact(kind="compaction_snapshot", ...)`. Task 11 should only re-check this behavior; it must already exist in Task 6.
 
 - [ ] **Step 6: Run graph tests**
 
@@ -1616,6 +1707,8 @@ Write `/Users/sss/careeragent/backend/tests/test_api_e2e.py`:
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.repositories.json_repository import JsonArtifactRepository
+from app.repositories.paths import RUNTIME_DATA_DIR
 
 
 client = TestClient(app)
@@ -1634,6 +1727,15 @@ def test_run_endpoint_returns_agent_runtime_fields() -> None:
     assert body["agent_trace_summary"]
     assert body["used_skill_refs"]
     assert body["artifacts"]
+
+
+def test_run_endpoint_rejects_unsafe_thread_id() -> None:
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "../bad", "message": "hello"},
+    )
+
+    assert response.status_code == 422
 ```
 
 - [ ] **Step 2: Implement `/api/runs` as graph entry**
@@ -1643,8 +1745,8 @@ Write `/Users/sss/careeragent/backend/app/api/runs.py`:
 ```python
 from __future__ import annotations
 
-from pydantic import BaseModel
 from fastapi import APIRouter
+from pydantic import BaseModel, constr
 
 from app.graphs.workflow import run_career_graph
 from app.repositories.json_repository import JsonArtifactRepository
@@ -1656,7 +1758,7 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 
 class RunRequest(BaseModel):
-    thread_id: str
+    thread_id: constr(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
     message: str
 
 
@@ -1763,7 +1865,33 @@ def test_report_is_thread_isolated() -> None:
     report_a = client.get(f"/api/reports/{thread_a}/markdown")
 
     assert report_a.status_code == 200
+    assert "A-ONLY" in report_a.text
     assert "B-ONLY" not in report_a.text
+
+    repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
+    assert all(item["source_thread_id"] == thread_a for item in repo.list_by_thread(thread_a))
+
+
+def test_training_submission_and_three_turn_interview_are_artifact_backed() -> None:
+    thread_id = "api-thread-training-interview"
+    messages = [
+        "我会 Python FastAPI，想匹配 Agent 开发岗位",
+        "生成三个月路径规划",
+        "根据能力差距给我一个训练任务",
+        "我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。",
+        "开始模拟面试",
+        "回答1：我会用 StateGraph 定义节点和条件边。",
+        "回答2：我会用 thread_id 和 checkpointer 保留会话状态。",
+        "回答3：我会把评分结果保存为 Artifact 并进入报告。",
+    ]
+
+    for message in messages:
+        response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
+        assert response.status_code == 200
+
+    repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
+    assert repo.list_by_kind(thread_id, "training_result")
+    assert repo.list_by_kind(thread_id, "interview_summary")
 ```
 
 - [ ] **Step 2: Implement Markdown report builder**
@@ -1779,18 +1907,18 @@ class MissingArtifactError(ValueError):
 
 
 def build_markdown_report(thread_id: str, artifacts: list[dict]) -> str:
-    by_kind = {artifact["kind"]: artifact for artifact in artifacts}
-    required = ["profile", "job_analysis", "match", "plan", "training_result", "interview_summary"]
-    missing = [kind for kind in required if kind not in by_kind]
-    if missing:
-        raise MissingArtifactError(f"Missing required artifacts for {thread_id}: {', '.join(missing)}")
+    def latest_by_kind(kind: str) -> dict:
+        candidates = [artifact for artifact in artifacts if artifact["kind"] == kind]
+        if not candidates:
+            raise MissingArtifactError(f"Missing required artifact for {thread_id}: {kind}")
+        return sorted(candidates, key=lambda artifact: artifact["updated_at"])[-1]
 
-    profile = by_kind["profile"]["payload"]
-    job = by_kind["job_analysis"]["payload"]
-    match = by_kind["match"]["payload"]
-    plan = by_kind["plan"]["payload"]
-    training = by_kind["training_result"]["payload"]
-    interview = by_kind["interview_summary"]["payload"]
+    profile = latest_by_kind("profile")["payload"]
+    job = latest_by_kind("job_analysis")["payload"]
+    match = latest_by_kind("match")["payload"]
+    plan = latest_by_kind("plan")["payload"]
+    training = latest_by_kind("training_result")["payload"]
+    interview = latest_by_kind("interview_summary")["payload"]
 
     sections = [
         "# CareerAgent 职业发展报告",
@@ -1822,7 +1950,7 @@ Write `/Users/sss/careeragent/backend/app/api/reports.py`:
 ```python
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Path, Response
 
 from app.artifacts.markdown import MissingArtifactError, build_markdown_report
 from app.repositories.json_repository import JsonArtifactRepository
@@ -1833,16 +1961,30 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 
 @router.get("/{thread_id}/markdown")
-def get_markdown_report(thread_id: str) -> Response:
+def get_markdown_report(thread_id: str = Path(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")) -> Response:
     repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
-    artifacts = [repo.get(item["id"]) for item in repo.list_by_thread(thread_id)]
+    required_kinds = {"profile", "job_analysis", "match", "plan", "training_result", "interview_summary"}
+    artifacts = [
+        repo.get(item["id"])
+        for item in repo.list_by_thread(thread_id)
+        if item["kind"] in required_kinds
+    ]
+    if not repo.list_by_kind(thread_id, "compaction_snapshot"):
+        repo.save(
+            kind="compaction_snapshot",
+            artifact_id=f"snapshot-{thread_id}-report",
+            payload={"message_summary": "报告导出前的结构化上下文快照"},
+            source_thread_id=thread_id,
+            source_agent="memory_manager",
+            parent_artifact_ids=[artifact["id"] for artifact in artifacts],
+        )
     try:
         markdown = build_markdown_report(thread_id, artifacts)
     except MissingArtifactError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     repo.save(
         kind="report",
-        artifact_id=f"report-{thread_id}",
+        artifact_id=f"report-{thread_id}-latest",
         payload={"markdown": markdown},
         source_thread_id=thread_id,
         source_agent="report",
@@ -2010,6 +2152,7 @@ Write:
 
 ```dotenv
 QWEN_API_KEY=
+DASHSCOPE_API_KEY=
 QWEN_BASE_URL=
 QWEN_MODEL=qwen3.6-plus
 DEEPSEEK_API_KEY=
