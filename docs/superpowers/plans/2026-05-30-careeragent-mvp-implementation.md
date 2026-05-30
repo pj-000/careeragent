@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Superseded for implementation:** This 2026-05-30 plan is kept for history and detailed inventory. External review found that its LangGraph integration came too late and was too shallow to prove strict multi-agent behavior. Use `/Users/sss/careeragent/docs/superpowers/plans/2026-05-31-careeragent-mvp-implementation-v2.md` for implementation.
+
 **Goal:** Build the local CareerAgent MVP demo described in `/Users/sss/careeragent/docs/superpowers/specs/2026-05-30-careeragent-mvp-design.md`.
 
 **Architecture:** The MVP is a local-first FastAPI + Vue application. FastAPI owns JSON persistence, schemas, model providers, progressive Skill loading, memory, and LangGraph multi-agent orchestration. Vue owns the student workflow: profile, job match, plan, training, interview, scenario chat, and Markdown report export.
