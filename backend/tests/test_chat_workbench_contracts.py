@@ -15,6 +15,27 @@ from app.schemas.runs import (
 from app.schemas.skills import SkillRuntimeRef
 
 
+def test_workspace_context_defaults_and_message_metadata_are_strict_v31_contract() -> None:
+    context = WorkspaceContext(thread_id="thread-1", updated_by_run_id="run-1")
+    message = ConversationMessage(
+        id="msg-1",
+        thread_id="thread-1",
+        role=ConversationRole.ASSISTANT,
+        content="继续推进。",
+    )
+
+    context_payload = context.model_dump(mode="json")
+    message_payload = message.model_dump(mode="json")
+
+    assert context.active_goal == "职业发展规划"
+    assert "active_compaction_snapshot_id" in context_payload
+    assert "created_at" not in context_payload
+    assert context_payload["updated_at"]
+    assert WorkspaceContext.model_fields["updated_by_run_id"].is_required()
+    assert message.warnings == []
+    assert message_payload["created_at"]
+
+
 def test_run_response_exposes_v31_chat_workbench_contract() -> None:
     context = WorkspaceContext(
         thread_id="thread-1",
@@ -87,7 +108,24 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
     assert payload["last_business_agent"] == "match"
     assert payload["current_runtime_node"] == "memory_manager"
     assert payload["assistant_message"]["artifact_refs"] == ["match-1"]
+    assert payload["assistant_message"]["warnings"] == []
     assert payload["workspace_delta"]["updated_context"]["active_match_id"] == "match-1"
+    assert set(payload["workspace_delta"]) == {"created_artifacts", "updated_context"}
+    assert WorkspaceDelta.model_fields["updated_context"].is_required()
+
+
+def test_run_response_accepts_raw_compaction_snapshot_payload() -> None:
+    response = RunResponse(
+        run_id="run-1",
+        thread_id="thread-1",
+        active_agent="memory_manager",
+        compaction_snapshot={"id": "compact-1", "hidden_reasoning": "not exposed by schema object"},
+    )
+
+    assert response.model_dump(mode="json")["compaction_snapshot"] == {
+        "id": "compact-1",
+        "hidden_reasoning": "not exposed by schema object",
+    }
 
 
 def test_workspace_response_uses_active_context_not_latest_kind() -> None:
@@ -151,7 +189,6 @@ def test_memory_compaction_and_skill_runtime_refs_are_bounded_public_contracts()
         scope=MemoryScope.GOAL,
         fact="目标是转向 Agent 开发工程师",
         confidence=0.91,
-        status=MemoryStatus.PENDING_CONFIRMATION,
     )
     snapshot = CompactionSnapshot(
         id="compact-1",
@@ -173,5 +210,19 @@ def test_memory_compaction_and_skill_runtime_refs_are_bounded_public_contracts()
     )
 
     assert memory.status == MemoryStatus.PENDING_CONFIRMATION
-    assert "hidden_reasoning" not in str(snapshot.model_dump())
+    assert {scope.value for scope in MemoryScope} == {"profile", "preference", "goal", "skill", "evidence"}
+    assert MemoryItem.model_fields["thread_id"].is_required()
+    assert snapshot.dropped_context_summary == "省略已完成的画像追问。"
+    assert set(snapshot.model_dump(mode="json")) == {
+        "id",
+        "thread_id",
+        "source_run_id",
+        "current_goal",
+        "confirmed_facts",
+        "decisions_made",
+        "active_artifact_refs",
+        "next_actions",
+        "dropped_context_summary",
+        "created_at",
+    }
     assert len(skill_ref.summary_digest) <= 240

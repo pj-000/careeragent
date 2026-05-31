@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app.schemas.memory import CompactionSnapshot, MemoryItem
+from app.schemas.memory import MemoryItem
 from app.schemas.skills import SkillRuntimeRef
 
 
@@ -62,7 +62,8 @@ class ActiveArtifactFacts(BaseModel):
 
 class WorkspaceContext(BaseModel):
     thread_id: str
-    active_goal: str | None = None
+    updated_by_run_id: str
+    active_goal: str = "职业发展规划"
     active_profile_id: str | None = None
     active_job_analysis_id: str | None = None
     active_match_id: str | None = None
@@ -70,9 +71,8 @@ class WorkspaceContext(BaseModel):
     active_training_result_id: str | None = None
     active_interview_summary_id: str | None = None
     active_report_id: str | None = None
-    updated_by_run_id: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
+    active_compaction_snapshot_id: str | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class ConversationMessage(BaseModel):
@@ -84,7 +84,8 @@ class ConversationMessage(BaseModel):
     artifact_refs: list[str] = Field(default_factory=list)
     last_business_agent: str | None = None
     current_runtime_node: str | None = None
-    created_at: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class SupervisorDecision(BaseModel):
@@ -101,10 +102,7 @@ class SupervisorDecision(BaseModel):
 
 class WorkspaceDelta(BaseModel):
     created_artifacts: list[ArtifactChainItem] = Field(default_factory=list)
-    updated_artifacts: list[ArtifactChainItem] = Field(default_factory=list)
-    updated_context: WorkspaceContext | None = None
-    active_artifact_facts: ActiveArtifactFacts | None = None
-    removed_artifact_ids: list[str] = Field(default_factory=list)
+    updated_context: WorkspaceContext
 
 
 class WorkspaceResponse(BaseModel):
@@ -146,7 +144,7 @@ class RunResponse(BaseModel):
     workspace_delta: WorkspaceDelta | None = None
     artifact_chain: list[ArtifactChainItem] = Field(default_factory=list)
     used_skill_runtime_refs: list[SkillRuntimeRef] = Field(default_factory=list)
-    compaction_snapshot: CompactionSnapshot | None = None
+    compaction_snapshot: dict[str, Any] | None = None
     memory_updates: list[MemoryItem] = Field(default_factory=list)
     blocking_reason: str | None = None
     missing_artifacts: list[str] = Field(default_factory=list)
