@@ -3,6 +3,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from app.schemas.memory import MemoryItem, MemoryScope, MemoryStatus
+from app.schemas.runs import ConversationMessage, WorkspaceContext
+
 
 class ArtifactRepository(ABC):
     @abstractmethod
@@ -44,3 +47,45 @@ class MemoryRepository(ABC):
 
 class ReportRepository(ABC):
     """Boundary for future database-backed report persistence."""
+
+
+class ConversationRepository(ABC):
+    @abstractmethod
+    def save(self, message: ConversationMessage) -> ConversationMessage:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_thread(self, thread_id: str) -> list[ConversationMessage]:
+        raise NotImplementedError
+
+
+class WorkspaceContextRepository(ABC):
+    @abstractmethod
+    def save(self, context: WorkspaceContext) -> WorkspaceContext:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, thread_id: str) -> WorkspaceContext | None:
+        raise NotImplementedError
+
+
+class MemoryItemRepository(ABC):
+    @abstractmethod
+    def save(self, item: MemoryItem) -> MemoryItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get(self, thread_id: str, memory_id: str) -> MemoryItem:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_thread(self, thread_id: str) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_scope(self, thread_id: str, scope: MemoryScope) -> list[MemoryItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_status(self, thread_id: str, memory_id: str, status: MemoryStatus) -> MemoryItem:
+        raise NotImplementedError
