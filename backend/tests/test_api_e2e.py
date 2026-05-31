@@ -59,8 +59,9 @@ def test_runs_endpoint_returns_runtime_fields_and_uses_tmp_runtime_dir(
     assert payload["missing_artifacts"] == []
     assert payload["missing_capabilities"] == []
     assert payload["blocking_reason"] is None
-    assert payload["workspace_delta"] is None
-    assert payload["memory_updates"] == []
+    assert payload["workspace_delta"]["updated_context"]["thread_id"] == "thread-api-e2e"
+    assert payload["workspace_delta"]["updated_context"]["active_profile_id"]
+    assert payload["memory_updates"]
     assert isinstance(payload["agent_trace_summary"], list)
     assert isinstance(payload["used_skill_refs"], list)
     assert isinstance(payload["used_skill_runtime_refs"], list)
@@ -73,6 +74,294 @@ def test_runs_endpoint_returns_runtime_fields_and_uses_tmp_runtime_dir(
         "compaction_snapshot",
     }
     assert (tmp_path / "artifacts-index.json").exists()
+
+
+def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_thread_repository import JsonConversationRepository, JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-v31-run", "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "completed"
+    assert payload["last_business_agent"] == "profile"
+    assert payload["current_runtime_node"] == "memory_manager"
+    assert payload["assistant_message"]["role"] == "assistant"
+    assert payload["assistant_message"]["run_id"] == payload["run_id"]
+    assert payload["supervisor_decision"]["intent"] == "build_profile"
+    assert payload["workspace_delta"]["updated_context"]["active_profile_id"]
+    assert payload["artifact_chain"][0]["kind"] == "profile"
+    assert payload["memory_updates"]
+    assert len(payload["memory_updates"]) == 1
+
+    messages = JsonConversationRepository(tmp_path).list_by_thread("thread-v31-run")
+    assert [message.role.value for message in messages] == ["user", "assistant"]
+    assert messages[1].artifact_refs == payload["assistant_message"]["artifact_refs"]
+    assert payload["memory_updates"][0]["source_message_id"] == messages[0].id
+    assert JsonWorkspaceContextRepository(tmp_path).get("thread-v31-run").active_profile_id
+
+
+def test_runs_endpoint_persists_assistant_error_message_on_permission_denied(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.agents.runtime import PermissionDenied
+    from app.api import runs
+    from app.repositories.json_thread_repository import JsonConversationRepository
+    from app.services import run_orchestrator
+
+    def deny(*args, **kwargs):
+        raise PermissionDenied("training cannot write match")
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(run_orchestrator, "run_career_graph", deny)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-permission-error", "message": "请做 match 分析"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "permission_denied"
+    assert payload["assistant_message"]["role"] == "assistant"
+    assert payload["retryable"] is False
+    messages = JsonConversationRepository(tmp_path).list_by_thread("thread-permission-error")
+    assert [message.role.value for message in messages] == ["user", "assistant"]
+
+
+def test_runs_endpoint_marks_provider_error_retryable(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.providers.base import ProviderError
+    from app.repositories.json_thread_repository import JsonConversationRepository
+    from app.services import run_orchestrator
+
+    def fail_provider(*args, **kwargs):
+        raise ProviderError("qwen upstream timeout")
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(run_orchestrator, "run_career_graph", fail_provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-provider-error", "message": "请分析岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "provider_error"
+    assert payload["retryable"] is True
+    assert "模型服务" in payload["assistant_message"]["content"]
+    messages = JsonConversationRepository(tmp_path).list_by_thread("thread-provider-error")
+    assert [message.role.value for message in messages] == ["user", "assistant"]
+
+
+def test_start_interview_requires_submitted_training_result(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-training-gate", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-training-gate", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-training-gate", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-training-gate", "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"task": "写一个 Agent demo", "has_submission": False, "score": None}},
+        "thread-training-gate",
+        "training",
+    )
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-training-gate",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            active_training_result_id="training-1",
+            updated_by_run_id="seed",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/runs", json={"thread_id": "thread-training-gate", "message": "开始模拟面试"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "blocked_by_prerequisite"
+    assert payload["supervisor_decision"]["missing_capabilities"] == ["training_scored"]
+    assert payload["missing_capabilities"] == ["training_scored"]
+    assert "训练答案" in payload["assistant_message"]["content"]
+    assert "完成评分" in payload["assistant_message"]["content"]
+    assert JsonArtifactRepository(tmp_path).list_by_kind("thread-training-gate", "interview_summary") == []
+
+
+def test_blocked_match_request_does_not_create_memory_candidate(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_thread_repository import JsonMemoryRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/api/runs", json={"thread_id": "thread-blocked-memory", "message": "请做 match 分析"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "blocked_by_prerequisite"
+    assert payload["memory_updates"] == []
+    assert JsonMemoryRepository(tmp_path).list_by_thread("thread-blocked-memory") == []
+
+
+def test_training_submission_does_not_reset_active_goal(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-goal-preserve", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-goal-preserve", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-goal-preserve", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-goal-preserve", "planning")
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-goal-preserve",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            updated_by_run_id="seed",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-goal-preserve", "message": "我的训练答案：我会设计 FastAPI + LangGraph demo。"},
+    )
+
+    assert response.status_code == 200
+    context = JsonWorkspaceContextRepository(tmp_path).get("thread-goal-preserve")
+    assert context.active_goal == "Agent 开发工程师"
+
+
+def test_runs_endpoint_backfills_workspace_context_from_existing_thread_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save("profile", "profile-seeded", {"content": {}}, "thread-seeded-chain", "profile")
+    artifact_repo.save("job_analysis", "job-seeded", {"content": {}}, "thread-seeded-chain", "job")
+    client = TestClient(app)
+
+    match_response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-seeded-chain", "message": "请做 match 分析"},
+    )
+    plan_response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-seeded-chain", "message": "生成三个月路径规划"},
+    )
+
+    assert match_response.status_code == 200
+    assert match_response.json()["run_status"] == "completed"
+    assert plan_response.status_code == 200
+    payload = plan_response.json()
+    assert payload["run_status"] == "completed"
+    context = JsonWorkspaceContextRepository(tmp_path).get("thread-seeded-chain")
+    assert context.active_profile_id == "profile-seeded"
+    assert context.active_job_analysis_id == "job-seeded"
+    assert context.active_match_id
+    assert context.active_plan_id
+
+
+def test_runs_endpoint_backfill_does_not_mix_artifacts_from_different_chains(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save("profile", "profile-old", {"content": {}}, "thread-multi-chain", "profile")
+    artifact_repo.save("job_analysis", "job-old", {"content": {}}, "thread-multi-chain", "job")
+    artifact_repo.save(
+        "match",
+        "match-old",
+        {"content": {}},
+        "thread-multi-chain",
+        "match",
+        ["profile-old", "job-old"],
+    )
+    artifact_repo.save("profile", "profile-new", {"content": {}}, "thread-multi-chain", "profile")
+    artifact_repo.save("job_analysis", "job-new", {"content": {}}, "thread-multi-chain", "job")
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-multi-chain", "message": "生成三个月路径规划"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "blocked_by_prerequisite"
+    assert payload["missing_artifacts"] == ["match"]
+    assert JsonArtifactRepository(tmp_path).list_by_kind("thread-multi-chain", "plan") == []
+    context = JsonWorkspaceContextRepository(tmp_path).get("thread-multi-chain")
+    assert context.active_profile_id == "profile-new"
+    assert context.active_job_analysis_id == "job-new"
+    assert context.active_match_id is None
+
+
+def test_runs_endpoint_failed_response_does_not_leak_unexpected_exception_detail(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import runs
+    from app.services import run_orchestrator
+
+    def fail_unexpectedly(*args, **kwargs):
+        raise ValueError("secret stack detail")
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(run_orchestrator, "run_career_graph", fail_unexpectedly)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-unexpected-error", "message": "请分析岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "failed"
+    assert "secret stack detail" not in payload["assistant_message"]["content"]
+    assert payload["warnings"] == ["unexpected_runtime_error"]
 
 
 def test_runs_endpoint_reuses_same_thread_checkpoint_between_requests(
@@ -143,6 +432,29 @@ def test_frontend_origin_is_allowed_by_cors() -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+def test_agent_specific_post_endpoints_do_not_execute_langgraph_runtime(tmp_path: Path, monkeypatch) -> None:
+    from app.api import interviews, training
+
+    monkeypatch.setattr(training, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(interviews, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    training_response = client.post(
+        "/api/training",
+        json={"thread_id": "thread-no-agent-endpoints", "message": "根据能力差距给我一个训练任务"},
+    )
+    interview_response = client.post(
+        "/api/interviews",
+        json={"thread_id": "thread-no-agent-endpoints", "message": "开始模拟面试"},
+    )
+
+    assert training_response.status_code == 410
+    assert interview_response.status_code == 410
+    assert "/api/runs" in training_response.json()["detail"]
+    assert "/api/runs" in interview_response.json()["detail"]
+    assert JsonArtifactRepository(tmp_path).list_by_thread("thread-no-agent-endpoints") == []
 
 
 def test_profile_and_job_seed_endpoints_create_artifacts_without_running_graph(

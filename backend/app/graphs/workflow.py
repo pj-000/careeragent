@@ -77,23 +77,31 @@ def build_graph(artifact_repo: ArtifactRepository):
     return graph.compile(checkpointer=checkpointer)
 
 
-def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactRepository) -> RunResponse:
+def run_career_graph_state(
+    thread_id: str,
+    message: str,
+    artifact_repo: ArtifactRepository,
+    run_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[AgentTraceItem]]:
     graph = get_runtime_graph(artifact_repo)
     config = {"configurable": {"thread_id": thread_id}}
-    run_id = f"run-{uuid4().hex[:12]}"
+    resolved_run_id = run_id or f"run-{uuid4().hex[:12]}"
+    initial_metadata = dict(metadata or {})
+    initial_metadata["run_id"] = resolved_run_id
+    graph_input: dict[str, Any] = {
+        "thread_id": thread_id,
+        "user_message": message,
+        "metadata": initial_metadata,
+    }
+    active_artifact_ids = initial_metadata.get("active_artifact_ids")
+    if isinstance(active_artifact_ids, list):
+        graph_input["artifact_ids"] = [str(artifact_id) for artifact_id in active_artifact_ids]
     state = graph.invoke(
-        {
-            "thread_id": thread_id,
-            "user_message": message,
-            "metadata": {"run_id": run_id},
-        },
+        graph_input,
         config=config,
     )
-    artifacts = artifact_repo.list_by_thread(thread_id)
     snapshots = state.get("agent_snapshots", {})
-    metadata = state.get("metadata", {})
-    if not isinstance(metadata, dict):
-        metadata = {}
     trace = [
         AgentTraceItem(
             agent_id=agent_id,
@@ -103,6 +111,16 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         )
         for agent_id, snapshot in snapshots.items()
     ]
+    return state, trace
+
+
+def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactRepository) -> RunResponse:
+    run_id = f"run-{uuid4().hex[:12]}"
+    state, trace = run_career_graph_state(thread_id, message, artifact_repo, run_id=run_id)
+    artifacts = artifact_repo.list_by_thread(thread_id)
+    metadata = state.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
     return RunResponse(
         run_id=run_id,
         thread_id=thread_id,

@@ -6,6 +6,10 @@ import httpx
 from app.schemas.model_providers import ModelRequest, ModelResponse
 
 
+class ProviderError(RuntimeError):
+    pass
+
+
 class ModelProvider(ABC):
     provider_name: str
 
@@ -44,22 +48,39 @@ class ChatCompletionProvider(ModelProvider):
 
     def generate(self, request: ModelRequest) -> ModelResponse:
         payload = self.build_payload(request)
-        response = httpx.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        raw = response.json()
-        return self._response_from_chat_completion(raw)
+        try:
+            response = httpx.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"{self.provider_name} provider request failed: {exc}") from exc
+        try:
+            raw = response.json()
+            return self._response_from_chat_completion(raw)
+        except (AttributeError, ValueError, TypeError, KeyError) as exc:
+            raise ProviderError(f"{self.provider_name} provider returned malformed response") from exc
 
     def _response_from_chat_completion(self, raw: dict[str, Any]) -> ModelResponse:
-        choice = (raw.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
+        if not isinstance(raw, dict):
+            raise TypeError("response must be an object")
+        choices = raw.get("choices")
+        if not isinstance(choices, list) or not choices:
+            raise ValueError("missing choices")
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise TypeError("choice must be an object")
+        if "message" not in choice:
+            raise ValueError("missing message")
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise TypeError("message must be an object")
         return ModelResponse(
             content=message.get("content") or "",
             reasoning_content=message.get("reasoning_content"),

@@ -3,10 +3,9 @@ from typing import Annotated
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from app.graphs.workflow import run_career_graph
-from app.repositories.json_repository import JsonArtifactRepository
 from app.repositories.paths import RUNTIME_DATA_DIR
 from app.schemas.runs import RunResponse
+from app.services.run_orchestrator import RunOrchestrator
 
 
 SAFE_THREAD_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"
@@ -21,5 +20,4 @@ class RunRequest(BaseModel):
 
 @router.post("", response_model=RunResponse)
 def create_run(request: RunRequest) -> RunResponse:
-    repo = JsonArtifactRepository(RUNTIME_DATA_DIR)
-    return run_career_graph(request.thread_id, request.message, repo)
+    return RunOrchestrator(RUNTIME_DATA_DIR).run(request.thread_id, request.message)

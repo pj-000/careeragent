@@ -132,11 +132,7 @@ def decide_user_message(
     required_inputs = REQUIRED_BY_INTENT[intent]
     required_capabilities = REQUIRED_CAPABILITIES_BY_INTENT[intent]
     missing_prerequisites = [kind for kind in required_inputs if kind not in available]
-    missing_capabilities = (
-        [capability for capability in required_capabilities if not _has_capability(facts, capability)]
-        if not missing_prerequisites
-        else []
-    )
+    missing_capabilities = [capability for capability in required_capabilities if not _has_capability(facts, capability)]
 
     return SupervisorDecision(
         intent=intent,
@@ -303,7 +299,7 @@ def _user_facing_reason(
         labels = "、".join(_artifact_label(kind) for kind in missing_prerequisites)
         return f"需要先补齐{labels}，再继续处理该请求。"
     if "training_scored" in missing_capabilities:
-        return "需要先提交并完成训练答案评分，才能进入模拟面试或导出报告。"
+        return "需要先提交训练答案并完成评分，才能进入模拟面试或导出报告。"
     if "interview_completed" in missing_capabilities:
         return "需要先完成三轮模拟面试，才能导出最终报告。"
     if intent == SupervisorIntent.SUBMIT_TRAINING:
@@ -316,17 +312,21 @@ def _next_actions_for(
     missing_prerequisites: list[str],
     missing_capabilities: list[str],
 ) -> list[str]:
+    actions: list[str] = []
     if missing_prerequisites:
         first_missing = missing_prerequisites[0]
         if first_missing == "training_result":
-            return ["先完成训练任务并提交训练答案", "再继续模拟面试或导出报告"]
-        if first_missing == "interview_summary":
-            return ["先完成三轮模拟面试", "再导出报告"]
-        return [f"先生成{_artifact_label(first_missing)}", "再继续当前请求"]
+            actions.extend(["先完成训练任务并提交训练答案", "再继续模拟面试或导出报告"])
+        elif first_missing == "interview_summary":
+            actions.extend(["先完成三轮模拟面试", "再导出报告"])
+        else:
+            actions.extend([f"先生成{_artifact_label(first_missing)}", "再继续当前请求"])
     if "training_scored" in missing_capabilities:
-        return ["先提交训练答案并完成评分", "再开始模拟面试"]
+        actions.extend(["先提交训练答案并完成评分", "再开始模拟面试"])
     if "interview_completed" in missing_capabilities:
-        return ["先完成三轮模拟面试", "再导出报告"]
+        actions.extend(["先完成三轮模拟面试", "再导出报告"])
+    if actions:
+        return _append_unique([], actions)
     if intent == SupervisorIntent.SUBMIT_TRAINING:
         return ["保存训练答案并生成训练结果"]
     return []

@@ -143,7 +143,7 @@ def test_supervisor_decision_reports_missing_prerequisites_for_report() -> None:
     assert decision.intent == SupervisorIntent.EXPORT_REPORT
     assert decision.target_agent == "report"
     assert decision.missing_prerequisites == ["training_result", "interview_summary"]
-    assert decision.missing_capabilities == []
+    assert decision.missing_capabilities == ["training_scored", "interview_completed"]
     assert "训练" in decision.next_actions[0]
 
 

@@ -1,8 +1,10 @@
 import os
 
+import httpx
 import pytest
 
 from app.providers.deepseek import DeepSeekProvider
+from app.providers.base import ProviderError
 from app.providers.mock import MockProvider
 from app.providers.qwen import QwenProvider
 from app.providers.router import get_model_provider
@@ -168,6 +170,60 @@ def test_deepseek_provider_reads_model_and_base_url_from_environment(monkeypatch
 
     assert provider.model == "deepseek-v4-flash"
     assert provider.api_url == "https://deepseek.example.test/chat/completions"
+
+
+def test_chat_completion_provider_maps_http_errors_to_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_request(*args, **kwargs):
+        raise httpx.TimeoutException("upstream timeout")
+
+    monkeypatch.setattr(httpx, "post", fail_request)
+    provider = QwenProvider(api_key="test-key", model="qwen-test")
+
+    with pytest.raises(ProviderError, match="qwen"):
+        provider.generate(ModelRequest(messages=[{"role": "user", "content": "hello"}]))
+
+
+def test_chat_completion_provider_maps_malformed_success_response_to_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def malformed_response(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json={"id": "missing-choices"},
+            request=httpx.Request("POST", "https://provider.example.test/chat/completions"),
+        )
+
+    monkeypatch.setattr(httpx, "post", malformed_response)
+    provider = QwenProvider(api_key="test-key", model="qwen-test")
+
+    with pytest.raises(ProviderError, match="malformed"):
+        provider.generate(ModelRequest(messages=[{"role": "user", "content": "hello"}]))
+
+
+@pytest.mark.parametrize(
+    "raw_response",
+    [
+        [],
+        {"choices": [{}]},
+        {"choices": [{"message": []}]},
+    ],
+)
+def test_chat_completion_provider_rejects_invalid_success_response_shapes(
+    raw_response,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def malformed_response(*args, **kwargs):
+        return httpx.Response(
+            200,
+            json=raw_response,
+            request=httpx.Request("POST", "https://provider.example.test/chat/completions"),
+        )
+
+    monkeypatch.setattr(httpx, "post", malformed_response)
+    provider = QwenProvider(api_key="test-key", model="qwen-test")
+
+    with pytest.raises(ProviderError, match="malformed"):
+        provider.generate(ModelRequest(messages=[{"role": "user", "content": "hello"}]))
 
 
 def test_router_returns_configured_provider() -> None:
