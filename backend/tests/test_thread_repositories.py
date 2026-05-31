@@ -1,3 +1,4 @@
+from app.repositories.interfaces import ConversationRepository, MemoryItemRepository, WorkspaceContextRepository
 from app.repositories.json_thread_repository import (
     JsonConversationRepository,
     JsonMemoryRepository,
@@ -40,6 +41,30 @@ def test_conversation_repository_persists_messages_by_thread(tmp_path):
     assert restored[1].artifact_refs == ["profile-1"]
 
 
+def test_conversation_repository_keeps_duplicate_message_ids_thread_isolated(tmp_path):
+    repo = JsonConversationRepository(tmp_path)
+
+    repo.save(
+        ConversationMessage(
+            id="msg-shared",
+            thread_id="thread-a",
+            role=ConversationRole.USER,
+            content="线程 A",
+        )
+    )
+    repo.save(
+        ConversationMessage(
+            id="msg-shared",
+            thread_id="thread-b",
+            role=ConversationRole.USER,
+            content="线程 B",
+        )
+    )
+
+    assert [message.content for message in repo.list_by_thread("thread-a")] == ["线程 A"]
+    assert [message.content for message in repo.list_by_thread("thread-b")] == ["线程 B"]
+
+
 def test_workspace_context_repository_keeps_active_chain_by_thread(tmp_path):
     repo = JsonWorkspaceContextRepository(tmp_path)
     first = WorkspaceContext(
@@ -61,6 +86,28 @@ def test_workspace_context_repository_keeps_active_chain_by_thread(tmp_path):
 
     assert repo.get("thread-a").active_match_id == "match-first"
     assert repo.get("thread-b").active_job_analysis_id == "job-second"
+
+
+def test_workspace_context_repository_keeps_sanitized_thread_id_collisions_isolated(tmp_path):
+    repo = JsonWorkspaceContextRepository(tmp_path)
+    slash_thread = WorkspaceContext(
+        thread_id="a/b",
+        active_goal="Slash thread",
+        active_job_analysis_id="job-slash",
+        updated_by_run_id="run-slash",
+    )
+    question_thread = WorkspaceContext(
+        thread_id="a?b",
+        active_goal="Question thread",
+        active_job_analysis_id="job-question",
+        updated_by_run_id="run-question",
+    )
+
+    repo.save(slash_thread)
+    repo.save(question_thread)
+
+    assert repo.get("a/b").active_job_analysis_id == "job-slash"
+    assert repo.get("a?b").active_job_analysis_id == "job-question"
 
 
 def test_workspace_context_repository_handles_unsafe_thread_ids(tmp_path):
@@ -95,6 +142,30 @@ def test_memory_repository_filters_and_updates_status(tmp_path):
     assert repo.get("thread-a", "memory-1").status == MemoryStatus.CONFIRMED
 
 
+def test_memory_repository_keeps_duplicate_memory_ids_thread_isolated(tmp_path):
+    repo = JsonMemoryRepository(tmp_path)
+
+    repo.save(
+        MemoryItem(
+            id="memory-shared",
+            thread_id="thread-a",
+            scope=MemoryScope.GOAL,
+            fact="线程 A 目标",
+        )
+    )
+    repo.save(
+        MemoryItem(
+            id="memory-shared",
+            thread_id="thread-b",
+            scope=MemoryScope.GOAL,
+            fact="线程 B 目标",
+        )
+    )
+
+    assert repo.get("thread-a", "memory-shared").fact == "线程 A 目标"
+    assert repo.get("thread-b", "memory-shared").fact == "线程 B 目标"
+
+
 def test_memory_repository_rejects_cross_thread_reads(tmp_path):
     repo = JsonMemoryRepository(tmp_path)
     repo.save(
@@ -112,3 +183,9 @@ def test_memory_repository_rejects_cross_thread_reads(tmp_path):
         assert "thread-b" in str(exc)
     else:
         raise AssertionError("Expected cross-thread memory read to raise KeyError")
+
+
+def test_json_repositories_implement_repository_interfaces(tmp_path):
+    assert isinstance(JsonConversationRepository(tmp_path), ConversationRepository)
+    assert isinstance(JsonWorkspaceContextRepository(tmp_path), WorkspaceContextRepository)
+    assert isinstance(JsonMemoryRepository(tmp_path), MemoryItemRepository)
