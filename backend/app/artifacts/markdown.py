@@ -137,9 +137,6 @@ def _training_submission(training: dict[str, Any]) -> str:
     submission = training.get("submission")
     if isinstance(submission, str) and submission.strip():
         return submission
-    legacy_submission = training.get("student_submission")
-    if isinstance(legacy_submission, str) and legacy_submission.strip():
-        return legacy_submission
     return ""
 
 

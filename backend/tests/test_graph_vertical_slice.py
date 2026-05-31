@@ -6,6 +6,7 @@ from app.agents.manifests import AGENT_MANIFESTS
 from app.agents.runtime import AgentRuntimeContext, PermissionDenied
 from app.graphs.workflow import build_graph, run_career_graph
 from app.repositories.json_repository import JsonArtifactRepository
+from app.schemas.runs import RunStatus
 
 
 def test_build_graph_uses_real_langgraph_nodes_and_conditional_edges(tmp_path: Path) -> None:
@@ -186,6 +187,16 @@ def test_match_without_prerequisites_is_blocked(tmp_path: Path) -> None:
     assert repo.list_by_kind(thread_id=thread_id, kind="match") == []
 
 
+def test_run_response_marks_blocked_prerequisite_status(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+
+    response = run_career_graph("blocked-run-status-thread", "请做 match 分析", repo)
+
+    assert response.run_status == RunStatus.BLOCKED_BY_PREREQUISITE
+    assert response.missing_artifacts == ["profile", "job_analysis"]
+    assert response.blocking_reason
+
+
 def test_missing_prerequisites_do_not_execute_target_agent(tmp_path: Path) -> None:
     repo = JsonArtifactRepository(tmp_path)
     graph = build_graph(artifact_repo=repo)
@@ -250,6 +261,54 @@ def test_interview_with_training_artifact_but_no_scored_fact_is_blocked(tmp_path
     assert decision["missing_capabilities"] == ["training_scored"]
     assert state["metadata"]["last_business_agent"] is None
     assert repo.list_by_kind(thread_id=thread_id, kind="interview_summary") == []
+
+
+def test_training_agent_scores_english_training_answer_route(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "english-training-answer-thread"
+
+    graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "training answer: I built a FastAPI and LangGraph demo.",
+            "metadata": {"active_artifact_kinds": ["match", "plan", "training_result"]},
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    training_records = [
+        repo.get(artifact["id"]) for artifact in repo.list_by_kind(thread_id=thread_id, kind="training_result")
+    ]
+    latest_content = training_records[-1]["payload"]["content"]
+    assert latest_content["has_submission"] is True
+    assert latest_content["submission"] == "I built a FastAPI and LangGraph demo."
+    assert latest_content["score"] is not None
+
+
+def test_interview_agent_records_chinese_interview_answer_route(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "chinese-interview-answer-thread"
+
+    graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "面试答案：我会用 thread_id 保存会话状态。",
+            "metadata": {
+                "active_artifact_kinds": ["profile", "job_analysis", "match", "plan", "training_result"],
+                "active_facts": {"training_scored": True},
+            },
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    interview_records = [
+        repo.get(artifact["id"]) for artifact in repo.list_by_kind(thread_id=thread_id, kind="interview_summary")
+    ]
+    latest_content = interview_records[-1]["payload"]["content"]
+    assert latest_content["answers"] == ["我会用 thread_id 保存会话状态。"]
+    assert latest_content["turn_count"] == 1
 
 
 def test_graph_handles_thread_ids_that_are_not_safe_artifact_ids(tmp_path: Path) -> None:

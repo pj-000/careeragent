@@ -21,6 +21,11 @@ def training_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> d
     }
     if "训练答案" in message:
         submission = message.split("训练答案", 1)[-1].lstrip("：: ")
+    elif "training answer" in message.lower():
+        submission = message.split(":", 1)[-1].strip() if ":" in message else message
+    else:
+        submission = ""
+    if submission:
         payload.update(
             {
                 "has_submission": True,

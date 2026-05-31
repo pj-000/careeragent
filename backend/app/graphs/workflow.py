@@ -18,7 +18,7 @@ from app.agents.supervisor import supervisor_node
 from app.agents.training import training_node
 from app.graphs.checkpoints import create_checkpointer
 from app.repositories.interfaces import ArtifactRepository
-from app.schemas.runs import AgentTraceItem, RunResponse, SupervisorDecision
+from app.schemas.runs import AgentTraceItem, RunResponse, RunStatus, SupervisorDecision
 
 
 class GraphState(TypedDict, total=False):
@@ -107,6 +107,7 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         run_id=run_id,
         thread_id=thread_id,
         active_agent=state.get("active_agent", "supervisor"),
+        run_status=_run_status(metadata),
         last_business_agent=metadata.get("last_business_agent"),
         current_runtime_node=metadata.get("current_runtime_node"),
         supervisor_decision=_supervisor_decision(metadata),
@@ -161,6 +162,15 @@ def _supervisor_decision(metadata: dict[str, Any]) -> SupervisorDecision | None:
     if not isinstance(decision, dict):
         return None
     return SupervisorDecision.model_validate(decision)
+
+
+def _run_status(metadata: dict[str, Any]) -> RunStatus:
+    decision = metadata.get("supervisor_decision")
+    if not isinstance(decision, dict):
+        return RunStatus.COMPLETED
+    if decision.get("missing_prerequisites") or decision.get("missing_capabilities"):
+        return RunStatus.BLOCKED_BY_PREREQUISITE
+    return RunStatus.COMPLETED
 
 
 def _missing_artifacts(metadata: dict[str, Any]) -> list[str]:
