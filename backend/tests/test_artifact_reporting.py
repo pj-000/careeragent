@@ -34,3 +34,29 @@ def test_report_rejects_match_artifact_from_training_agent() -> None:
 
     with pytest.raises(MissingArtifactError, match="producer"):
         build_markdown_report("thread-report-producer", artifacts)
+
+
+def test_report_requires_training_submission_and_score() -> None:
+    artifacts = [
+        _artifact("profile", "profile", {"summary": "Python/FastAPI backend student"}),
+        _artifact("job_analysis", "job", {"summary": "Agent 开发工程师"}),
+        _artifact("match", "match", {"score": 74, "gaps": ["LangGraph 证据不足"]}),
+        _artifact("plan", "planning", {"milestones": ["补齐 LangGraph 项目证据"]}),
+        _artifact(
+            "training_result",
+            "training",
+            {
+                "has_submission": True,
+                "submission": "demo",
+                "score": None,
+            },
+        ),
+        _artifact(
+            "interview_summary",
+            "interview",
+            {"answers": ["a1", "a2", "a3"], "turn_count": 3, "completed": True},
+        ),
+    ]
+
+    with pytest.raises(MissingArtifactError, match="training score"):
+        build_markdown_report("thread-report-producer", artifacts)

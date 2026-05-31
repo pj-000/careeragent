@@ -240,10 +240,8 @@ def _active_facts_from_artifacts(
 ) -> ActiveArtifactFacts:
     training = _latest_artifact_content(thread_id, "training_result", available_artifact_kinds, artifact_repo)
     interview = _latest_artifact_content(thread_id, "interview_summary", available_artifact_kinds, artifact_repo)
-    training_submitted = (
-        bool(training.get("has_submission"))
-        and training.get("submission") is not None
-    )
+    submission = training.get("submission")
+    training_submitted = bool(training.get("has_submission")) and isinstance(submission, str) and bool(submission.strip())
     training_scored = training_submitted and training.get("score") is not None
     turn_count = interview.get("turn_count")
     if not isinstance(turn_count, int):

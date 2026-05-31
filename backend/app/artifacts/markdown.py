@@ -129,8 +129,11 @@ def _validate_required_report_content(thread_id: str, by_kind: dict[str, dict[st
 
 
 def _validate_training_submission(thread_id: str, artifact: dict[str, Any]) -> None:
-    if not _training_submission(_content(artifact)):
+    training = _content(artifact)
+    if not bool(training.get("has_submission")) or not _training_submission(training):
         raise MissingArtifactError(f"Missing training submission for {thread_id}")
+    if training.get("score") is None:
+        raise MissingArtifactError(f"Missing training score for {thread_id}")
 
 
 def _training_submission(training: dict[str, Any]) -> str:
