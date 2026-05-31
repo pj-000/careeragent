@@ -230,6 +230,28 @@ def test_supervisor_uses_active_chain_kinds_before_thread_history(tmp_path: Path
     assert repo.list_by_kind(thread_id=thread_id, kind="plan") == []
 
 
+def test_interview_with_training_artifact_but_no_scored_fact_is_blocked(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "interview-active-facts-thread"
+
+    state = graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "开始模拟面试",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis", "match", "plan", "training_result"]},
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "start_interview"
+    assert decision["missing_prerequisites"] == []
+    assert decision["missing_capabilities"] == ["training_scored"]
+    assert state["metadata"]["last_business_agent"] is None
+    assert repo.list_by_kind(thread_id=thread_id, kind="interview_summary") == []
+
+
 def test_graph_handles_thread_ids_that_are_not_safe_artifact_ids(tmp_path: Path) -> None:
     repo = JsonArtifactRepository(tmp_path)
 

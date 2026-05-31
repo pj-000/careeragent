@@ -73,7 +73,12 @@ def supervisor_node(state: dict[str, Any], artifact_repo: ArtifactRepository) ->
     career_state = coerce_state(state)
     runtime = make_runtime(career_state, "supervisor", artifact_repo)
     available_artifact_kinds = _available_artifact_kinds(career_state.metadata, career_state.thread_id, artifact_repo)
-    active_facts = _active_facts(career_state.metadata, available_artifact_kinds)
+    active_facts = _active_facts(
+        career_state.metadata,
+        career_state.thread_id,
+        available_artifact_kinds,
+        artifact_repo,
+    )
     decision = decide_user_message(career_state.user_message, available_artifact_kinds, active_facts=active_facts)
     target = decision.target_agent
     career_state.supervisor_decision = decision.model_dump(mode="json")
@@ -160,13 +165,11 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
 
 def _detect_intent(message: str) -> SupervisorIntent:
     normalized = message.lower()
-    if "继续" in message or "记忆" in message or "压缩" in message:
-        return SupervisorIntent.CLARIFY
     if message.startswith("回答") or "回答1" in message or "回答2" in message or "回答3" in message or "面试答案" in message:
         return SupervisorIntent.ANSWER_INTERVIEW
     if "训练答案" in message or "我的训练答案" in message or "training answer" in normalized:
         return SupervisorIntent.SUBMIT_TRAINING
-    if "我会" in message or "我有" in message or "resume" in normalized or "profile" in normalized:
+    if "我的简历" in message or "简历" in message or "我会" in message or "我有" in message or "resume" in normalized or "profile" in normalized:
         return SupervisorIntent.BUILD_PROFILE
     if "岗位" in message or "jd" in normalized or "job" in normalized:
         return SupervisorIntent.ANALYZE_JOB
@@ -180,6 +183,8 @@ def _detect_intent(message: str) -> SupervisorIntent:
         return SupervisorIntent.PLAN
     if "匹配" in message or "match" in normalized:
         return SupervisorIntent.MATCH
+    if "继续" in message or "记忆" in message or "压缩" in message:
+        return SupervisorIntent.CLARIFY
     return SupervisorIntent.MATCH
 
 
@@ -194,9 +199,16 @@ def _available_artifact_kinds(
     return {artifact["kind"] for artifact in artifact_repo.list_by_thread(thread_id)}
 
 
-def _active_facts(metadata: dict[str, Any], available_artifact_kinds: set[str]) -> ActiveArtifactFacts:
+def _active_facts(
+    metadata: dict[str, Any],
+    thread_id: str,
+    available_artifact_kinds: set[str],
+    artifact_repo: ArtifactRepository,
+) -> ActiveArtifactFacts:
     active_facts = metadata.get("active_facts")
-    return _coerce_active_facts(active_facts if isinstance(active_facts, dict) else None, available_artifact_kinds)
+    if isinstance(active_facts, dict):
+        return _coerce_active_facts(active_facts, available_artifact_kinds)
+    return _active_facts_from_artifacts(thread_id, available_artifact_kinds, artifact_repo)
 
 
 def _coerce_active_facts(
@@ -213,12 +225,67 @@ def _coerce_active_facts(
         has_match="match" in available_artifact_kinds,
         has_plan="plan" in available_artifact_kinds,
         has_training_result="training_result" in available_artifact_kinds,
-        training_submitted="training_result" in available_artifact_kinds,
-        training_scored="training_result" in available_artifact_kinds,
+        training_submitted=False,
+        training_scored=False,
         has_interview_summary="interview_summary" in available_artifact_kinds,
-        interview_turn_count=3 if "interview_summary" in available_artifact_kinds else 0,
-        interview_completed="interview_summary" in available_artifact_kinds,
+        interview_turn_count=0,
+        interview_completed=False,
     )
+
+
+def _active_facts_from_artifacts(
+    thread_id: str,
+    available_artifact_kinds: set[str],
+    artifact_repo: ArtifactRepository,
+) -> ActiveArtifactFacts:
+    training = _latest_artifact_content(thread_id, "training_result", available_artifact_kinds, artifact_repo)
+    interview = _latest_artifact_content(thread_id, "interview_summary", available_artifact_kinds, artifact_repo)
+    training_submitted = (
+        bool(training.get("has_submission"))
+        and training.get("submission") is not None
+    )
+    training_scored = training_submitted and training.get("score") is not None
+    turn_count = interview.get("turn_count")
+    if not isinstance(turn_count, int):
+        turn_count = 0
+    return ActiveArtifactFacts(
+        has_profile="profile" in available_artifact_kinds,
+        has_job_analysis="job_analysis" in available_artifact_kinds,
+        has_match="match" in available_artifact_kinds,
+        has_plan="plan" in available_artifact_kinds,
+        has_training_result="training_result" in available_artifact_kinds,
+        training_submitted=training_submitted,
+        training_scored=training_scored,
+        has_interview_summary="interview_summary" in available_artifact_kinds,
+        interview_turn_count=turn_count,
+        interview_completed=turn_count >= 3,
+    )
+
+
+def _latest_artifact_content(
+    thread_id: str,
+    kind: str,
+    available_artifact_kinds: set[str],
+    artifact_repo: ArtifactRepository,
+) -> dict[str, Any]:
+    if kind not in available_artifact_kinds:
+        return {}
+    records = []
+    for artifact in artifact_repo.list_by_kind(thread_id, kind):
+        record = artifact_repo.get(artifact["id"])
+        payload = record.get("payload", {})
+        content = payload.get("content") if isinstance(payload, dict) else None
+        records.append(
+            (
+                str(record.get("updated_at", "")),
+                str(record.get("created_at", "")),
+                str(record.get("id", "")),
+                content if isinstance(content, dict) else {},
+            )
+        )
+    if not records:
+        return {}
+    return dict(sorted(records, key=lambda item: item[:3])[-1][3])
 
 
 def _has_capability(facts: ActiveArtifactFacts, capability: str) -> bool:

@@ -26,6 +26,8 @@ def interview_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> 
             "questions": ["Tell me about a backend project.", "How do you debug production issues?"],
             "focus": "Use evidence from saved profile and match artifacts.",
             "answers": answers,
+            "turn_count": len(answers),
+            "completed": len(answers) >= 3,
             "turns": turns,
             "feedback": _feedback_for_answers(answers),
         },

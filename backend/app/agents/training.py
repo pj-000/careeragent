@@ -15,11 +15,16 @@ def training_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> d
     payload = {
         "task": "围绕 Agent 开发岗位能力差距，设计一个可交付的小型项目练习。",
         "rubric": ["LangGraph 编排清晰", "FastAPI 接口可演示", "RAG/测试证据可验证"],
+        "has_submission": False,
+        "submission": None,
+        "score": None,
     }
     if "训练答案" in message:
         submission = message.split("训练答案", 1)[-1].lstrip("：: ")
         payload.update(
             {
+                "has_submission": True,
+                "submission": submission,
                 "student_submission": submission,
                 "feedback": "答案覆盖 FastAPI 与 LangGraph 编排，下一步补充 RAG 检索链路和自动化测试证据。",
                 "score": 82,

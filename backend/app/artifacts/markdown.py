@@ -62,7 +62,7 @@ def build_markdown_report(thread_id: str, artifacts: list[dict[str, Any]]) -> st
         "",
         "## 训练结果",
         f"- 任务：{training.get('task', '围绕能力差距完成一次项目化练习')}",
-        f"- 提交：{training.get('student_submission', '尚未提交')}",
+        f"- 提交：{_training_submission(training) or '尚未提交'}",
         f"- 反馈：{training.get('feedback', '继续补充可验证证据')}",
         f"- 分数：{training.get('score', '待评分')}",
         "",
@@ -101,6 +101,8 @@ def _latest_required_artifacts(
             raise MissingArtifactError(
                 f"Invalid producer for {kind}: expected {expected_producer}, got {actual_producer}"
             )
+        if kind == "training_result":
+            _validate_training_submission(thread_id, by_kind[kind])
     return by_kind
 
 
@@ -118,14 +120,27 @@ def _content(artifact: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_required_report_content(thread_id: str, by_kind: dict[str, dict[str, Any]]) -> None:
-    training = _content(by_kind["training_result"])
-    if not training.get("student_submission"):
-        raise MissingArtifactError(f"Missing training submission for {thread_id}")
+    _validate_training_submission(thread_id, by_kind["training_result"])
 
     interview = _content(by_kind["interview_summary"])
     answers = interview.get("answers")
     if not isinstance(answers, list) or len(answers) < 3:
         raise MissingArtifactError(f"Missing three interview answers for {thread_id}")
+
+
+def _validate_training_submission(thread_id: str, artifact: dict[str, Any]) -> None:
+    if not _training_submission(_content(artifact)):
+        raise MissingArtifactError(f"Missing training submission for {thread_id}")
+
+
+def _training_submission(training: dict[str, Any]) -> str:
+    submission = training.get("submission")
+    if isinstance(submission, str) and submission.strip():
+        return submission
+    legacy_submission = training.get("student_submission")
+    if isinstance(legacy_submission, str) and legacy_submission.strip():
+        return legacy_submission
+    return ""
 
 
 def _join_items(value: Any) -> str:

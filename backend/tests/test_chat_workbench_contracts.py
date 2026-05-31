@@ -195,6 +195,47 @@ def test_supervisor_decision_prefers_profile_for_first_demo_prompt() -> None:
     assert decision.missing_prerequisites == []
 
 
+def test_supervisor_decision_checks_answer_intent_before_continue_clarify() -> None:
+    decision = decide_user_message(
+        "继续回答1：我会用 StateGraph 组织节点。",
+        {"profile", "job_analysis", "match", "plan", "training_result"},
+        active_facts=ActiveArtifactFacts(training_scored=True),
+    )
+
+    assert decision.intent == SupervisorIntent.ANSWER_INTERVIEW
+    assert decision.target_agent == "interview"
+
+
+def test_supervisor_decision_detects_chinese_resume_prompt_as_profile() -> None:
+    decision = decide_user_message("这是我的简历，请帮我整理", set())
+
+    assert decision.intent == SupervisorIntent.BUILD_PROFILE
+    assert decision.target_agent == "profile"
+    assert decision.missing_prerequisites == []
+
+
+def test_supervisor_does_not_infer_training_scored_from_artifact_presence() -> None:
+    decision = decide_user_message(
+        "开始模拟面试",
+        {"profile", "job_analysis", "match", "plan", "training_result"},
+    )
+
+    assert decision.intent == SupervisorIntent.START_INTERVIEW
+    assert decision.missing_prerequisites == []
+    assert decision.missing_capabilities == ["training_scored"]
+
+
+def test_supervisor_does_not_infer_interview_completed_from_summary_presence() -> None:
+    decision = decide_user_message(
+        "请导出报告",
+        {"profile", "job_analysis", "match", "plan", "training_result", "interview_summary"},
+    )
+
+    assert decision.intent == SupervisorIntent.EXPORT_REPORT
+    assert decision.missing_prerequisites == []
+    assert decision.missing_capabilities == ["training_scored", "interview_completed"]
+
+
 def test_run_response_accepts_raw_compaction_snapshot_payload() -> None:
     response = RunResponse(
         run_id="run-1",
