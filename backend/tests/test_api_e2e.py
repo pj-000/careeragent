@@ -816,6 +816,34 @@ def test_report_export_without_context_is_repeatable(tmp_path: Path, monkeypatch
     assert "# CareerAgent 职业发展报告" in second.text
 
 
+def test_report_export_partial_active_context_does_not_fallback_to_complete_thread_history(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import reports
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-partial-active"
+    _seed_report_chain(tmp_path, thread_id, training_score=82, turn_count=3, save_context=False)
+    JsonWorkspaceContextRepository(tmp_path).save(
+        WorkspaceContext(
+            thread_id=thread_id,
+            active_goal="Agent 开发工程师",
+            active_profile_id=f"profile-{thread_id}",
+            updated_by_run_id="partial-context",
+        )
+    )
+    client = TestClient(app)
+
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert report.status_code == 409
+    assert "Missing required artifact kind" in report.json()["detail"]
+    assert JsonArtifactRepository(tmp_path).list_by_kind(thread_id, "report") == []
+
+
 def test_report_export_requires_training_submission_and_three_interview_answers(
     tmp_path: Path,
     monkeypatch,
