@@ -110,7 +110,6 @@ class WorkspaceResponse(BaseModel):
     active_context: WorkspaceContext
     workspace_artifacts: dict[str, dict[str, Any]] = Field(default_factory=dict)
     artifact_chain: list[ArtifactChainItem] = Field(default_factory=list)
-    active_artifact_facts: ActiveArtifactFacts | None = None
 
 
 class AgentRun(BaseModel):

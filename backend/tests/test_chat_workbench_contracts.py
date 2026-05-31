@@ -158,6 +158,12 @@ def test_workspace_response_uses_active_context_not_latest_kind() -> None:
         ],
     )
 
+    assert set(response.model_dump(mode="json")) == {
+        "thread_id",
+        "active_context",
+        "workspace_artifacts",
+        "artifact_chain",
+    }
     assert response.workspace_artifacts["match"]["id"] == "match-first"
     assert [item.id for item in response.artifact_chain] == ["job-first", "match-first"]
 
