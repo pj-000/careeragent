@@ -21,6 +21,15 @@ from app.services.workspace import artifact_chain_from_context, update_context_f
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
+REQUIRED_REPORT_INPUT_KINDS = {
+    "profile",
+    "job_analysis",
+    "match",
+    "plan",
+    "training_result",
+    "interview_summary",
+}
+
 
 @router.get("/{thread_id}/markdown")
 def export_markdown_report(
@@ -33,16 +42,11 @@ def export_markdown_report(
     context_repo = JsonWorkspaceContextRepository(RUNTIME_DATA_DIR)
     current_context = context_repo.get(thread_id)
     try:
-        if current_context:
-            chain = artifact_chain_from_context(current_context, repo)
-            artifacts = [repo.get(item.id) for item in chain]
-            markdown = build_markdown_report_from_chain(thread_id, artifacts)
-            parent_artifact_ids = required_parent_artifact_ids_from_chain(thread_id, artifacts)
-        else:
-            artifact_refs = repo.list_by_thread(thread_id)
-            artifacts = [repo.get(artifact["id"]) for artifact in artifact_refs]
-            markdown = build_markdown_report(thread_id, artifacts)
-            parent_artifact_ids = required_parent_artifact_ids(thread_id, artifacts)
+        markdown, parent_artifact_ids = _build_report_from_active_or_legacy_chain(
+            thread_id,
+            repo,
+            current_context,
+        )
     except MissingArtifactError as exc:
         detail = _normalize_active_chain_error(thread_id, current_context, repo, str(exc))
         raise HTTPException(status_code=409, detail=detail) from exc
@@ -63,12 +67,35 @@ def export_markdown_report(
     update_context_from_artifacts(
         thread_id=thread_id,
         run_id=f"report-export-{thread_id}",
-        created_artifact_ids=[report_artifact_id],
+        created_artifact_ids=[*parent_artifact_ids, report_artifact_id],
         active_goal=current_context.active_goal if current_context else "职业发展报告",
         artifact_repo=repo,
         context_repo=context_repo,
     )
     return Response(content=markdown, media_type="text/markdown; charset=utf-8")
+
+
+def _build_report_from_active_or_legacy_chain(
+    thread_id: str,
+    repo: JsonArtifactRepository,
+    current_context: Any,
+) -> tuple[str, list[str]]:
+    if current_context:
+        chain = artifact_chain_from_context(current_context, repo)
+        if _has_active_report_inputs(chain):
+            artifacts = [repo.get(item.id) for item in chain]
+            return (
+                build_markdown_report_from_chain(thread_id, artifacts),
+                required_parent_artifact_ids_from_chain(thread_id, artifacts),
+            )
+
+    artifact_refs = repo.list_by_thread(thread_id)
+    artifacts = [repo.get(artifact["id"]) for artifact in artifact_refs]
+    return build_markdown_report(thread_id, artifacts), required_parent_artifact_ids(thread_id, artifacts)
+
+
+def _has_active_report_inputs(chain: list[Any]) -> bool:
+    return any(item.kind in REQUIRED_REPORT_INPUT_KINDS for item in chain)
 
 
 def _normalize_active_chain_error(

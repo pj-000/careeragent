@@ -31,6 +31,7 @@ def _seed_report_chain(
     thread_id: str,
     training_score: int | None,
     turn_count: int,
+    save_context: bool = True,
 ) -> None:
     from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
     from app.schemas.runs import WorkspaceContext
@@ -97,19 +98,20 @@ def _seed_report_chain(
         "interview",
         [f"training-{thread_id}"],
     )
-    JsonWorkspaceContextRepository(tmp_path).save(
-        WorkspaceContext(
-            thread_id=thread_id,
-            active_goal="Agent 开发工程师",
-            active_profile_id=f"profile-{thread_id}",
-            active_job_analysis_id=f"job-{thread_id}",
-            active_match_id=f"match-{thread_id}",
-            active_plan_id=f"plan-{thread_id}",
-            active_training_result_id=f"training-{thread_id}",
-            active_interview_summary_id=f"interview-{thread_id}",
-            updated_by_run_id="seed-report-chain",
+    if save_context:
+        JsonWorkspaceContextRepository(tmp_path).save(
+            WorkspaceContext(
+                thread_id=thread_id,
+                active_goal="Agent 开发工程师",
+                active_profile_id=f"profile-{thread_id}",
+                active_job_analysis_id=f"job-{thread_id}",
+                active_match_id=f"match-{thread_id}",
+                active_plan_id=f"plan-{thread_id}",
+                active_training_result_id=f"training-{thread_id}",
+                active_interview_summary_id=f"interview-{thread_id}",
+                updated_by_run_id="seed-report-chain",
+            )
         )
-    )
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -773,6 +775,45 @@ def test_report_export_rejects_interview_summary_under_three_turns(tmp_path: Pat
 
     assert report.status_code == 409
     assert "fewer than three interview turns" in report.json()["detail"]
+
+
+def test_report_export_fallback_survives_workspace_restore_for_legacy_thread(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import reports, threads
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-legacy-workspace"
+    _seed_report_chain(tmp_path, thread_id, training_score=82, turn_count=3, save_context=False)
+    client = TestClient(app)
+
+    workspace = client.get(f"/api/threads/{thread_id}/workspace")
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert workspace.status_code == 200
+    assert report.status_code == 200
+    context = JsonWorkspaceContextRepository(tmp_path).get(thread_id)
+    assert context.active_profile_id == f"profile-{thread_id}"
+    assert context.active_report_id == f"report-{thread_id}-latest"
+
+
+def test_report_export_without_context_is_repeatable(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-repeatable-legacy"
+    _seed_report_chain(tmp_path, thread_id, training_score=82, turn_count=3, save_context=False)
+    client = TestClient(app)
+
+    first = client.get(f"/api/reports/{thread_id}/markdown")
+    second = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert "# CareerAgent 职业发展报告" in second.text
 
 
 def test_report_export_requires_training_submission_and_three_interview_answers(
