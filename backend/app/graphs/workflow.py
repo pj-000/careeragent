@@ -77,7 +77,15 @@ def build_graph(artifact_repo: ArtifactRepository):
 def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactRepository) -> RunResponse:
     graph = get_runtime_graph(artifact_repo)
     config = {"configurable": {"thread_id": thread_id}}
-    state = graph.invoke({"thread_id": thread_id, "user_message": message}, config=config)
+    run_id = f"run-{uuid4().hex[:12]}"
+    state = graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": message,
+            "metadata": {"run_id": run_id},
+        },
+        config=config,
+    )
     artifacts = artifact_repo.list_by_thread(thread_id)
     snapshots = state.get("agent_snapshots", {})
     trace = [
@@ -90,7 +98,7 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         for agent_id, snapshot in snapshots.items()
     ]
     return RunResponse(
-        run_id=f"run-{uuid4().hex[:12]}",
+        run_id=run_id,
         thread_id=thread_id,
         active_agent=state.get("active_agent", "supervisor"),
         agent_trace_summary=trace,

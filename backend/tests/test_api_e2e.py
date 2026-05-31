@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.repositories.json_repository import JsonArtifactRepository
+from app.schemas.runs import RunResponse, RunStatus
 
 
 def complete_demo_messages(marker: str | None = None) -> list[str]:
@@ -50,22 +51,21 @@ def test_runs_endpoint_returns_runtime_fields_and_uses_tmp_runtime_dir(
 
     assert response.status_code == 200
     payload = response.json()
-    assert set(payload) == {
-        "run_id",
-        "thread_id",
-        "active_agent",
-        "agent_trace_summary",
-        "used_skill_refs",
-        "artifacts",
-        "next_actions",
-        "warnings",
-    }
+    assert set(payload) == set(RunResponse.model_fields)
     assert payload["run_id"].startswith("run-")
     assert payload["thread_id"] == "thread-api-e2e"
     assert payload["active_agent"] == "memory_manager"
+    assert payload["run_status"] == RunStatus.COMPLETED
+    assert payload["missing_artifacts"] == []
+    assert payload["missing_capabilities"] == []
+    assert payload["blocking_reason"] is None
+    assert payload["workspace_delta"] is None
+    assert payload["memory_updates"] == []
     assert isinstance(payload["agent_trace_summary"], list)
     assert isinstance(payload["used_skill_refs"], list)
+    assert isinstance(payload["used_skill_runtime_refs"], list)
     assert isinstance(payload["artifacts"], list)
+    assert isinstance(payload["artifact_chain"], list)
     assert isinstance(payload["next_actions"], list)
     assert isinstance(payload["warnings"], list)
     assert {artifact["kind"] for artifact in payload["artifacts"]} >= {

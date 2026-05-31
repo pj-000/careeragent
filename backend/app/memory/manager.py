@@ -14,12 +14,19 @@ class MemoryManager:
         for candidate in candidates:
             scope = _memory_scope(candidate.get("scope"))
             fact = candidate.get("fact")
-            if scope is None or not isinstance(fact, str) or not fact.strip():
+            thread_id = candidate.get("thread_id")
+            if (
+                scope is None
+                or not isinstance(fact, str)
+                or not fact.strip()
+                or not isinstance(thread_id, str)
+                or not thread_id.strip()
+            ):
                 continue
             accepted.append(
                 LongTermMemoryItem(
                     id=str(candidate.get("id") or _memory_id(scope.value, fact)),
-                    thread_id=str(candidate.get("thread_id") or "thread-unknown"),
+                    thread_id=thread_id,
                     scope=scope,
                     fact=fact,
                     source_artifact_id=candidate.get("source_artifact_id"),

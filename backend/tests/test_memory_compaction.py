@@ -112,12 +112,16 @@ def test_compact_state_returns_v31_public_snapshot_without_hidden_reasoning() ->
 
 
 def test_compact_state_uses_user_message_when_no_assistant_message_exists() -> None:
-    state = CareerAgentState(thread_id="thread-2", user_message="请分析我的简历")
+    state = CareerAgentState(
+        thread_id="thread-2",
+        user_message="请分析我的简历",
+        metadata={"run_id": "run-2"},
+    )
 
     snapshot = compact_state(state)
 
     assert snapshot.thread_id == "thread-2"
-    assert snapshot.source_run_id == "run-unknown"
+    assert snapshot.source_run_id == "run-2"
     assert snapshot.current_goal == "职业发展规划"
     assert snapshot.dropped_context_summary == "请分析我的简历"
     assert snapshot.confirmed_facts == []
@@ -130,11 +134,18 @@ def test_memory_manager_evaluate_candidates_accepts_only_allowed_scopes_with_fac
     manager = MemoryManager()
     accepted = manager.evaluate_candidates(
         [
-            {"scope": "profile", "fact": "User knows FastAPI.", "source_artifact_id": "profile-1", "confidence": 0.8},
+            {
+                "scope": "profile",
+                "fact": "User knows FastAPI.",
+                "thread_id": "thread-1",
+                "source_artifact_id": "profile-1",
+                "confidence": 0.8,
+            },
             {"scope": "goal", "fact": "User wants backend roles.", "thread_id": "thread-1"},
-            {"scope": "preference", "fact": "User prefers remote roles.", "confidence": 0.7},
-            {"scope": "skill", "fact": "User knows FastAPI."},
-            {"scope": "evidence", "fact": "Profile artifact mentions Python experience."},
+            {"scope": "preference", "fact": "User prefers remote roles.", "thread_id": "thread-1", "confidence": 0.7},
+            {"scope": "skill", "fact": "User knows FastAPI.", "thread_id": "thread-1"},
+            {"scope": "evidence", "fact": "Profile artifact mentions Python experience.", "thread_id": "thread-1"},
+            {"scope": "profile", "fact": "Missing thread id should not leak a placeholder."},
             {"scope": "history", "fact": "Should not use legacy scope."},
             {"scope": "preferences", "fact": "Should not use legacy plural scope."},
             {"scope": "career_history", "fact": "Should not use legacy scope."},
@@ -153,11 +164,11 @@ def test_memory_manager_evaluate_candidates_accepts_only_allowed_scopes_with_fac
         "Profile artifact mentions Python experience.",
     ]
     assert [item.thread_id for item in accepted] == [
-        "thread-unknown",
         "thread-1",
-        "thread-unknown",
-        "thread-unknown",
-        "thread-unknown",
+        "thread-1",
+        "thread-1",
+        "thread-1",
+        "thread-1",
     ]
     assert accepted[0].source_artifact_id == "profile-1"
     assert accepted[0].confidence == 0.8

@@ -119,12 +119,12 @@ def test_run_response_accepts_raw_compaction_snapshot_payload() -> None:
         run_id="run-1",
         thread_id="thread-1",
         active_agent="memory_manager",
-        compaction_snapshot={"id": "compact-1", "hidden_reasoning": "not exposed by schema object"},
+        compaction_snapshot={"id": "compact-1", "dropped_context_summary": "省略已完成的画像追问。"},
     )
 
     assert response.model_dump(mode="json")["compaction_snapshot"] == {
         "id": "compact-1",
-        "hidden_reasoning": "not exposed by schema object",
+        "dropped_context_summary": "省略已完成的画像追问。",
     }
 
 

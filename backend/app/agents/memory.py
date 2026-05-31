@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 from app.agents.manifests import AGENT_MANIFESTS
 from app.agents.runtime import coerce_state, make_runtime, next_artifact_id
@@ -11,6 +12,8 @@ from app.repositories.interfaces import ArtifactRepository
 
 def memory_manager_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> dict[str, Any]:
     career_state = coerce_state(state)
+    if not career_state.metadata.get("run_id"):
+        career_state.metadata["run_id"] = f"run-{uuid4().hex[:12]}"
     runtime = make_runtime(career_state, "memory_manager", artifact_repo)
     for scope in AGENT_MANIFESTS["memory_manager"].readable_memory_scopes:
         runtime.read_memory(scope)
@@ -24,7 +27,7 @@ def memory_manager_node(state: dict[str, Any], artifact_repo: ArtifactRepository
     runtime.save_artifact(
         kind="compaction_snapshot",
         artifact_id=artifact_id,
-        payload=snapshot.model_dump(),
+        payload=snapshot.model_dump(mode="json"),
         parent_artifact_ids=list(career_state.artifact_ids),
     )
     career_state.artifact_ids.append(artifact_id)
