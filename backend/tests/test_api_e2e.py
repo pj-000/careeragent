@@ -26,6 +26,92 @@ def complete_demo_messages(marker: str | None = None) -> list[str]:
     ]
 
 
+def _seed_report_chain(
+    tmp_path: Path,
+    thread_id: str,
+    training_score: int | None,
+    turn_count: int,
+) -> None:
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save(
+        "profile",
+        f"profile-{thread_id}",
+        {"content": {"summary": "Python/FastAPI backend student", "signals": ["Python", "FastAPI"]}},
+        thread_id,
+        "profile",
+    )
+    artifact_repo.save(
+        "job_analysis",
+        f"job-{thread_id}",
+        {"content": {"summary": "Agent 开发工程师"}},
+        thread_id,
+        "job",
+        [f"profile-{thread_id}"],
+    )
+    artifact_repo.save(
+        "match",
+        f"match-{thread_id}",
+        {"content": {"score": 74, "gaps": ["LangGraph 证据不足"], "strengths": ["FastAPI"]}},
+        thread_id,
+        "match",
+        [f"profile-{thread_id}", f"job-{thread_id}"],
+    )
+    artifact_repo.save(
+        "plan",
+        f"plan-{thread_id}",
+        {"content": {"milestones": ["补齐 LangGraph 项目证据"]}},
+        thread_id,
+        "planning",
+        [f"match-{thread_id}"],
+    )
+    has_submission = training_score is not None
+    artifact_repo.save(
+        "training_result",
+        f"training-{thread_id}",
+        {
+            "content": {
+                "task": "写一个 Agent demo",
+                "has_submission": has_submission,
+                "submission": "FastAPI + LangGraph demo" if has_submission else None,
+                "score": training_score,
+            }
+        },
+        thread_id,
+        "training",
+        [f"plan-{thread_id}"],
+    )
+    artifact_repo.save(
+        "interview_summary",
+        f"interview-{thread_id}",
+        {
+            "content": {
+                "turn_count": turn_count,
+                "completed": turn_count >= 3,
+                "answers": [f"answer-{index}" for index in range(1, turn_count + 1)],
+            }
+        },
+        thread_id,
+        "interview",
+        [f"training-{thread_id}"],
+    )
+    JsonWorkspaceContextRepository(tmp_path).save(
+        WorkspaceContext(
+            thread_id=thread_id,
+            active_goal="Agent 开发工程师",
+            active_profile_id=f"profile-{thread_id}",
+            active_job_analysis_id=f"job-{thread_id}",
+            active_match_id=f"match-{thread_id}",
+            active_plan_id=f"plan-{thread_id}",
+            active_training_result_id=f"training-{thread_id}",
+            active_interview_summary_id=f"interview-{thread_id}",
+            updated_by_run_id="seed-report-chain",
+        )
+    )
+
+
 def test_health_endpoint_returns_ok() -> None:
     client = TestClient(app)
 
@@ -106,6 +192,73 @@ def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_pa
     assert messages[1].artifact_refs == payload["assistant_message"]["artifact_refs"]
     assert payload["memory_updates"][0]["source_message_id"] == messages[0].id
     assert JsonWorkspaceContextRepository(tmp_path).get("thread-v31-run").active_profile_id
+
+
+def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports, runs, threads
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+    thread_id = "thread-workspace-api"
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": thread_id, "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    workspace = client.get(f"/api/threads/{thread_id}/workspace")
+    messages = client.get(f"/api/threads/{thread_id}/messages")
+    artifacts = client.get(f"/api/threads/{thread_id}/artifacts")
+    memory = client.get(f"/api/threads/{thread_id}/memory")
+    assert workspace.status_code == 200
+    assert messages.status_code == 200
+    assert artifacts.status_code == 200
+    assert memory.status_code == 200
+    assert workspace.json()["active_context"]["active_profile_id"]
+    assert [message["role"] for message in messages.json()] == ["user", "assistant"]
+    assert any(artifact["kind"] == "profile" for artifact in artifacts.json())
+    assert isinstance(memory.json(), list)
+    assert memory.json()
+
+
+def test_memory_confirm_and_reject_endpoints_update_status(tmp_path: Path, monkeypatch) -> None:
+    from app.api import threads
+    from app.repositories.json_thread_repository import JsonMemoryRepository
+    from app.schemas.memory import MemoryItem, MemoryScope, MemoryStatus
+
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    JsonMemoryRepository(tmp_path).save(
+        MemoryItem(
+            id="memory-api-1",
+            thread_id="thread-memory-api",
+            scope=MemoryScope.GOAL,
+            fact="想做 Agent 开发",
+            status=MemoryStatus.PENDING_CONFIRMATION,
+        )
+    )
+    client = TestClient(app)
+
+    confirm = client.post("/api/threads/thread-memory-api/memory/memory-api-1/confirm")
+    reject = client.post("/api/threads/thread-memory-api/memory/memory-api-1/reject")
+
+    assert confirm.status_code == 200
+    assert confirm.json()["status"] == "confirmed"
+    assert reject.status_code == 200
+    assert reject.json()["status"] == "rejected"
+
+
+def test_memory_confirm_missing_item_returns_404(tmp_path: Path, monkeypatch) -> None:
+    from app.api import threads
+
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/api/threads/thread-memory-api/memory/missing-memory/confirm")
+
+    assert response.status_code == 404
 
 
 def test_runs_endpoint_persists_assistant_error_message_on_permission_denied(
@@ -570,6 +723,56 @@ def test_complete_backend_loop_exports_isolated_markdown_reports(
     } <= {
         repo.get(artifact_id)["kind"] for artifact_id in latest_report["parent_artifact_ids"]
     }
+
+
+def test_report_export_updates_active_report_context(tmp_path: Path, monkeypatch) -> None:
+    from app.api import interviews, reports, runs, training
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(training, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(interviews, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+    thread_id = "thread-report-context"
+
+    for message in complete_demo_messages():
+        response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
+        assert response.status_code == 200
+
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert report.status_code == 200
+    context = JsonWorkspaceContextRepository(tmp_path).get(thread_id)
+    assert context.active_report_id == f"report-{thread_id}-latest"
+
+
+def test_report_export_rejects_task_only_training_result(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-task-only"
+    _seed_report_chain(tmp_path, thread_id, training_score=None, turn_count=3)
+    client = TestClient(app)
+
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert report.status_code == 409
+    assert "training answer" in report.json()["detail"]
+
+
+def test_report_export_rejects_interview_summary_under_three_turns(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-two-turns"
+    _seed_report_chain(tmp_path, thread_id, training_score=82, turn_count=2)
+    client = TestClient(app)
+
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert report.status_code == 409
+    assert "fewer than three interview turns" in report.json()["detail"]
 
 
 def test_report_export_requires_training_submission_and_three_interview_answers(

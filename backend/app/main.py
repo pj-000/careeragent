@@ -6,6 +6,7 @@ from app.api.jobs import router as jobs_router
 from app.api.profiles import router as profiles_router
 from app.api.reports import router as reports_router
 from app.api.runs import router as runs_router
+from app.api.threads import router as threads_router
 from app.api.training import router as training_router
 
 
@@ -25,6 +26,7 @@ app.include_router(jobs_router)
 app.include_router(training_router)
 app.include_router(interviews_router)
 app.include_router(reports_router)
+app.include_router(threads_router)
 
 
 @app.get("/api/health")
