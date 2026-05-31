@@ -197,6 +197,42 @@ def test_active_artifact_facts_does_not_trust_completed_flag_without_three_turns
     assert facts.interview_completed is False
 
 
+def test_active_artifact_facts_ignores_missing_and_cross_thread_active_ids(tmp_path):
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save(
+        "training_result",
+        "training-other-thread",
+        {"content": {"has_submission": True, "submission": "demo", "score": 82}},
+        "thread-b",
+        "training",
+    )
+    artifact_repo.save(
+        "interview_summary",
+        "interview-other-thread",
+        {"content": {"turn_count": 3, "completed": True}},
+        "thread-b",
+        "interview",
+    )
+    context = WorkspaceContext(
+        thread_id="thread-a",
+        active_goal="Agent 开发",
+        active_profile_id="missing-profile",
+        active_training_result_id="training-other-thread",
+        active_interview_summary_id="interview-other-thread",
+        updated_by_run_id="run-1",
+    )
+
+    facts = build_active_artifact_facts(context, artifact_repo)
+
+    assert facts.has_profile is False
+    assert facts.has_training_result is False
+    assert facts.training_submitted is False
+    assert facts.training_scored is False
+    assert facts.has_interview_summary is False
+    assert facts.interview_turn_count == 0
+    assert facts.interview_completed is False
+
+
 def test_artifact_chain_from_context_ignores_missing_optional_ids(tmp_path):
     artifact_repo = JsonArtifactRepository(tmp_path)
     artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")

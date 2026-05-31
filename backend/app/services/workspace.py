@@ -139,28 +139,45 @@ def build_active_artifact_facts(
     context: WorkspaceContext,
     artifact_repo: ArtifactRepository,
 ) -> ActiveArtifactFacts:
-    training_content = _artifact_content(context.active_training_result_id, context.thread_id, artifact_repo)
+    active_artifacts = _active_artifacts_by_kind(context, artifact_repo)
+    training_content = _content_from_artifact(active_artifacts.get("training_result"))
     submission = training_content.get("submission")
     training_submitted = bool(training_content.get("has_submission")) and isinstance(submission, str) and bool(
         submission.strip()
     )
     training_scored = training_submitted and training_content.get("score") is not None
 
-    interview_content = _artifact_content(context.active_interview_summary_id, context.thread_id, artifact_repo)
+    interview_content = _content_from_artifact(active_artifacts.get("interview_summary"))
     interview_turn_count = _interview_turn_count(interview_content)
 
     return ActiveArtifactFacts(
-        has_profile=bool(context.active_profile_id),
-        has_job_analysis=bool(context.active_job_analysis_id),
-        has_match=bool(context.active_match_id),
-        has_plan=bool(context.active_plan_id),
-        has_training_result=bool(context.active_training_result_id),
+        has_profile="profile" in active_artifacts,
+        has_job_analysis="job_analysis" in active_artifacts,
+        has_match="match" in active_artifacts,
+        has_plan="plan" in active_artifacts,
+        has_training_result="training_result" in active_artifacts,
         training_submitted=training_submitted,
         training_scored=training_scored,
-        has_interview_summary=bool(context.active_interview_summary_id),
+        has_interview_summary="interview_summary" in active_artifacts,
         interview_turn_count=interview_turn_count,
         interview_completed=interview_turn_count >= 3,
     )
+
+
+def _active_artifacts_by_kind(
+    context: WorkspaceContext,
+    artifact_repo: ArtifactRepository,
+) -> dict[str, dict[str, Any]]:
+    artifacts: dict[str, dict[str, Any]] = {}
+    for kind, field_name in CONTEXT_FIELD_BY_KIND.items():
+        artifact_id = getattr(context, field_name)
+        if not artifact_id:
+            continue
+        artifact = _get_artifact_or_none(artifact_id, artifact_repo)
+        if not artifact or artifact.get("source_thread_id") != context.thread_id or artifact.get("kind") != kind:
+            continue
+        artifacts[kind] = artifact
+    return artifacts
 
 
 def _artifact_content(
@@ -172,6 +189,16 @@ def _artifact_content(
         return {}
     artifact = _get_artifact_or_none(artifact_id, artifact_repo)
     if not artifact or artifact.get("source_thread_id") != thread_id:
+        return {}
+    payload = artifact.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    content = payload.get("content")
+    return content if isinstance(content, dict) else {}
+
+
+def _content_from_artifact(artifact: dict[str, Any] | None) -> dict[str, Any]:
+    if not artifact:
         return {}
     payload = artifact.get("payload")
     if not isinstance(payload, dict):
