@@ -407,6 +407,7 @@ class RunResponse(BaseModel):
     memory_updates: list[MemoryItem] = Field(default_factory=list)
     blocking_reason: str | None = None
     missing_artifacts: list[str] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
     retryable: bool = False
     next_actions: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -1459,6 +1460,44 @@ def test_active_artifact_facts_require_submitted_training_and_three_interview_tu
     assert facts.interview_completed is False
 
 
+def test_active_artifact_facts_does_not_trust_completed_flag_without_three_turns(tmp_path):
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-a", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-a", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-a", "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"has_submission": True, "submission": "demo", "score": 82}},
+        "thread-a",
+        "training",
+    )
+    artifact_repo.save(
+        "interview_summary",
+        "interview-1",
+        {"content": {"turn_count": 2, "completed": True}},
+        "thread-a",
+        "interview",
+    )
+    context = WorkspaceContext(
+        thread_id="thread-a",
+        active_goal="Agent 开发",
+        active_profile_id="profile-1",
+        active_job_analysis_id="job-1",
+        active_match_id="match-1",
+        active_plan_id="plan-1",
+        active_training_result_id="training-1",
+        active_interview_summary_id="interview-1",
+        updated_by_run_id="run-1",
+    )
+
+    facts = build_active_artifact_facts(context, artifact_repo)
+
+    assert facts.interview_turn_count == 2
+    assert facts.interview_completed is False
+
+
 def test_artifact_chain_from_context_ignores_missing_optional_ids(tmp_path):
     artifact_repo = JsonArtifactRepository(tmp_path)
     artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")
@@ -1631,7 +1670,7 @@ def build_active_artifact_facts(
     training_submitted = bool(training_payload.get("has_submission") or training_payload.get("submission"))
     training_scored = training_submitted and training_payload.get("score") is not None
     interview_turn_count = int(interview_payload.get("turn_count") or len(interview_payload.get("turns") or []))
-    interview_completed = bool(interview_payload.get("completed")) or interview_turn_count >= 3
+    interview_completed = interview_turn_count >= 3
     return ActiveArtifactFacts(
         has_profile=bool(context.active_profile_id),
         has_job_analysis=bool(context.active_job_analysis_id),
@@ -1926,6 +1965,9 @@ def test_start_interview_requires_submitted_training_result(tmp_path: Path, monk
     payload = response.json()
     assert payload["run_status"] == "blocked_by_prerequisite"
     assert payload["supervisor_decision"]["missing_capabilities"] == ["training_scored"]
+    assert payload["missing_capabilities"] == ["training_scored"]
+    assert "训练答案" in payload["assistant_message"]["content"]
+    assert "完成评分" in payload["assistant_message"]["content"]
     assert JsonArtifactRepository(tmp_path).list_by_kind("thread-training-gate", "interview_summary") == []
 
 
@@ -2189,6 +2231,7 @@ class RunOrchestrator:
             memory_updates=memory_updates,
             blocking_reason=_blocking_reason(supervisor_decision),
             missing_artifacts=supervisor_decision.missing_prerequisites if supervisor_decision else [],
+            missing_capabilities=supervisor_decision.missing_capabilities if supervisor_decision else [],
             retryable=False,
             next_actions=supervisor_decision.next_actions if supervisor_decision else ["继续职业工作流"],
             warnings=state.get("warnings", []),
@@ -2266,7 +2309,7 @@ def _active_goal(message: str, decision: SupervisorDecision | None) -> str | Non
 
 
 def _assistant_summary(decision: SupervisorDecision | None, artifact_ids: list[str]) -> str:
-    if decision and decision.missing_prerequisites:
+    if decision and (decision.missing_prerequisites or decision.missing_capabilities):
         return decision.user_facing_reason
     if artifact_ids:
         return f"已完成本轮处理，并生成 {len(artifact_ids)} 个运行产物。"
@@ -3156,6 +3199,7 @@ export interface RunResponse {
   memory_updates: MemoryItem[];
   blocking_reason?: string;
   missing_artifacts: string[];
+  missing_capabilities: string[];
   retryable: boolean;
   next_actions: string[];
   warnings: string[];
@@ -3591,6 +3635,7 @@ function pretty(value: unknown): string {
     <div class="simple-status">
       <p>业务 Agent：{{ lastRun?.last_business_agent ?? "等待输入" }}</p>
       <p>Runtime 节点：{{ lastRun?.current_runtime_node ?? "等待运行" }}</p>
+      <p v-if="lastRun?.missing_capabilities?.length">缺少完成条件：{{ lastRun.missing_capabilities.join(", ") }}</p>
     </div>
 
     <template v-if="demoMode">
