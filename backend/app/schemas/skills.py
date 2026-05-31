@@ -13,15 +13,16 @@ class SkillDocument(BaseModel):
     body: str
 
 
-class LoadedSkill(BaseModel):
-    ref: str
-    summary: str
-    content: str
-
-
 class SkillRuntimeRef(BaseModel):
     skill_id: str
     version: str
     section_ids: list[str] = Field(default_factory=list)
     detail_level: Literal["summary", "full", "skipped"]
     summary_digest: str = Field(max_length=240)
+
+
+class LoadedSkill(BaseModel):
+    ref: str
+    summary: str
+    content: str
+    runtime_ref: SkillRuntimeRef

@@ -27,6 +27,7 @@ class GraphState(TypedDict, total=False):
     active_agent: str
     messages: list[dict[str, str]]
     loaded_skill_refs: list[str]
+    loaded_skill_runtime_refs: list[dict[str, Any]]
     related_long_term_memory_refs: list[str]
     artifact_ids: list[str]
     agent_snapshots: dict[str, dict[str, Any]]

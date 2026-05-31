@@ -77,6 +77,23 @@ def test_loader_downgrades_content_to_summary_when_budget_is_too_small() -> None
     assert all(skill.content == skill.summary for skill in loaded)
 
 
+def test_loader_returns_bounded_runtime_refs_by_intent_and_budget() -> None:
+    loaded = SkillLoader.builtin().resolve_for_agent("match", "gap_analysis", budget=1200)
+    refs = [skill.runtime_ref for skill in loaded]
+
+    assert refs[0].skill_id == "match/match_scoring_rubric"
+    assert refs[0].detail_level in {"summary", "full"}
+    assert len(refs[0].summary_digest) <= 240
+    assert all("# " not in ref.summary_digest for ref in refs)
+
+
+def test_loader_marks_skipped_when_budget_is_zero() -> None:
+    loaded = SkillLoader.builtin().resolve_for_agent("match", "gap_analysis", budget=0)
+
+    assert all(skill.runtime_ref.detail_level == "skipped" for skill in loaded)
+    assert all(skill.content == "" for skill in loaded)
+
+
 def test_agent_skills_align_with_manifest_skill_refs() -> None:
     manifest_refs = {
         agent_id: manifest.skill_policy.default_skill_ids

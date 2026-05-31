@@ -3,9 +3,7 @@ from app.schemas.memory import CompactionSnapshot
 
 
 def compact_state(state: CareerAgentState) -> CompactionSnapshot:
-    run_id = state.metadata.get("run_id")
-    if not run_id:
-        raise ValueError("CompactionSnapshot requires metadata.run_id")
+    run_id = state.metadata.get("run_id") or "run-unknown"
     return CompactionSnapshot(
         id=f"compact-{state.thread_id}",
         thread_id=state.thread_id,

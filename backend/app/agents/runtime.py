@@ -8,6 +8,8 @@ from app.agents.manifests import AGENT_MANIFESTS
 from app.graphs.state import AgentSnapshot, CareerAgentState
 from app.repositories.interfaces import ArtifactRepository
 from app.schemas.agents import AgentManifest
+from app.schemas.skills import SkillRuntimeRef
+from app.skills.loader import SkillLoader
 
 
 class PermissionDenied(PermissionError):
@@ -130,7 +132,10 @@ def run_business_agent(
 ) -> dict[str, Any]:
     state = coerce_state(raw_state)
     runtime = make_runtime(state, agent_id, artifact_repo)
+    intent = _current_intent(state, agent_id)
+    loaded_skills = SkillLoader.builtin().resolve_for_agent(agent_id, intent, budget=1200)
     skill_refs = AGENT_MANIFESTS[agent_id].skill_policy.default_skill_ids
+    skill_runtime_refs = [skill.runtime_ref for skill in loaded_skills]
     for scope in AGENT_MANIFESTS[agent_id].readable_memory_scopes:
         if "memory_read" in AGENT_MANIFESTS[agent_id].allowed_tools:
             runtime.read_memory(scope)
@@ -150,6 +155,10 @@ def run_business_agent(
     )
     state.artifact_ids.append(artifact_id)
     state.loaded_skill_refs = _append_unique(state.loaded_skill_refs, skill_refs)
+    state.loaded_skill_runtime_refs = append_skill_runtime_refs(
+        state.loaded_skill_runtime_refs,
+        skill_runtime_refs,
+    )
     state.agent_snapshots[agent_id] = AgentSnapshot(
         agent_id=agent_id,
         summary=f"{agent_id} saved {artifact_kind} artifact {artifact_id}.",
@@ -167,6 +176,43 @@ def run_business_agent(
         [f"{agent_id} generated deterministic MVP content; validate before use."],
     )
     return state.model_dump()
+
+
+def append_skill_runtime_refs(
+    existing: list[dict[str, Any]],
+    additions: list[SkillRuntimeRef],
+) -> list[dict[str, Any]]:
+    values = list(existing)
+    seen = {
+        (
+            str(item.get("skill_id")),
+            str(item.get("version")),
+            str(item.get("detail_level")),
+        )
+        for item in values
+        if isinstance(item, dict)
+    }
+    for ref in additions:
+        ref_payload = ref.model_dump(mode="json")
+        key = (
+            str(ref_payload.get("skill_id")),
+            str(ref_payload.get("version")),
+            str(ref_payload.get("detail_level")),
+        )
+        if key not in seen:
+            values.append(ref_payload)
+            seen.add(key)
+    return values
+
+
+def _current_intent(state: CareerAgentState, default: str) -> str:
+    decision = state.supervisor_decision
+    if not isinstance(decision, dict):
+        metadata_decision = state.metadata.get("supervisor_decision")
+        decision = metadata_decision if isinstance(metadata_decision, dict) else None
+    if isinstance(decision, dict) and decision.get("intent"):
+        return str(decision["intent"])
+    return default
 
 
 def _append_unique(existing: list[str], additions: list[str]) -> list[str]:

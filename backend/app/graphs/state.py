@@ -17,6 +17,7 @@ class CareerAgentState(BaseModel):
     active_agent: str = "supervisor"
     messages: list[dict[str, str]] = Field(default_factory=list)
     loaded_skill_refs: list[str] = Field(default_factory=list)
+    loaded_skill_runtime_refs: list[dict[str, Any]] = Field(default_factory=list)
     related_long_term_memory_refs: list[str] = Field(default_factory=list)
     artifact_ids: list[str] = Field(default_factory=list)
     agent_snapshots: dict[str, AgentSnapshot] = Field(default_factory=dict)

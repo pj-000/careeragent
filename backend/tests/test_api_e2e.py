@@ -196,6 +196,45 @@ def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_pa
     assert JsonWorkspaceContextRepository(tmp_path).get("thread-v31-run").active_profile_id
 
 
+def test_runs_endpoint_returns_skill_runtime_refs_without_skill_body(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-skill-ref-api", "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["used_skill_runtime_refs"]
+    first_ref = payload["used_skill_runtime_refs"][0]
+    assert first_ref["skill_id"]
+    assert first_ref["detail_level"] in {"summary", "full", "skipped"}
+    assert "content" not in first_ref
+
+
+def test_runs_endpoint_returns_public_compaction_snapshot_after_memory_manager(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-compaction-api", "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compaction_snapshot"] is not None
+    dumped = str(payload["compaction_snapshot"]).lower()
+    assert "hidden_reasoning" not in dumped
+    assert "reasoning_content" not in dumped
+
+
 def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monkeypatch) -> None:
     from app.api import reports, runs, threads
 

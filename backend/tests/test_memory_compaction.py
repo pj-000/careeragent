@@ -111,6 +111,37 @@ def test_compact_state_returns_v31_public_snapshot_without_hidden_reasoning() ->
     assert "chain-of-thought" not in dumped_text
 
 
+def test_compact_state_uses_v31_schema_and_excludes_provider_reasoning() -> None:
+    state = CareerAgentState(
+        thread_id="thread-v31-compact",
+        user_message="继续规划",
+        artifact_ids=["profile-1", "match-1"],
+        messages=[
+            {"role": "user", "content": "继续规划"},
+            {"role": "assistant", "content": "下一步补齐项目证据。", "reasoning_content": "private"},
+        ],
+        metadata={
+            "run_id": "run-v31",
+            "active_goal": "转向 Agent 开发工程师",
+            "confirmed_facts": ["会 Python"],
+            "decisions_made": ["先补 LangGraph 项目"],
+            "next_actions": ["生成计划"],
+            "hidden_reasoning": "private",
+        },
+    )
+
+    snapshot = compact_state(state)
+    dumped = snapshot.model_dump()
+    dumped_text = str(dumped).lower()
+
+    assert snapshot.source_run_id == "run-v31"
+    assert snapshot.current_goal == "转向 Agent 开发工程师"
+    assert snapshot.active_artifact_refs == ["profile-1", "match-1"]
+    assert "hidden_reasoning" not in dumped_text
+    assert "chain_of_thought" not in dumped_text
+    assert "reasoning_content" not in dumped_text
+
+
 def test_compact_state_uses_user_message_when_no_assistant_message_exists() -> None:
     state = CareerAgentState(
         thread_id="thread-2",
