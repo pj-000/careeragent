@@ -29,7 +29,16 @@ class MissingArtifactError(ValueError):
 def build_markdown_report(thread_id: str, artifacts: list[dict[str, Any]]) -> str:
     by_kind = _latest_required_artifacts(thread_id, artifacts)
     _validate_required_report_content(thread_id, by_kind)
+    return _render_markdown_report(thread_id, by_kind)
 
+
+def build_markdown_report_from_chain(thread_id: str, artifacts: list[dict[str, Any]]) -> str:
+    by_kind = _required_artifacts_from_chain(thread_id, artifacts)
+    _validate_required_chain_report_content(thread_id, by_kind)
+    return _render_markdown_report(thread_id, by_kind)
+
+
+def _render_markdown_report(thread_id: str, by_kind: dict[str, dict[str, Any]]) -> str:
     profile = _content(by_kind["profile"])
     job = _content(by_kind["job_analysis"])
     match = _content(by_kind["match"])
@@ -78,6 +87,12 @@ def required_parent_artifact_ids(thread_id: str, artifacts: list[dict[str, Any]]
     return [by_kind[kind]["id"] for kind in REQUIRED_REPORT_KINDS]
 
 
+def required_parent_artifact_ids_from_chain(thread_id: str, artifacts: list[dict[str, Any]]) -> list[str]:
+    by_kind = _required_artifacts_from_chain(thread_id, artifacts)
+    _validate_required_chain_report_content(thread_id, by_kind)
+    return [by_kind[kind]["id"] for kind in REQUIRED_REPORT_KINDS]
+
+
 def _latest_required_artifacts(
     thread_id: str, artifacts: list[dict[str, Any]]
 ) -> dict[str, dict[str, Any]]:
@@ -106,6 +121,27 @@ def _latest_required_artifacts(
     return by_kind
 
 
+def _required_artifacts_from_chain(thread_id: str, artifacts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_kind: dict[str, dict[str, Any]] = {}
+    for artifact in artifacts:
+        if artifact.get("source_thread_id") != thread_id:
+            continue
+        kind = artifact.get("kind")
+        if kind not in REQUIRED_REPORT_KINDS:
+            continue
+        expected_producer = EXPECTED_REPORT_PRODUCERS[kind]
+        actual_producer = artifact.get("source_agent")
+        if actual_producer != expected_producer:
+            raise MissingArtifactError(
+                f"Invalid producer for {kind}: expected {expected_producer}, got {actual_producer}"
+            )
+        by_kind[kind] = artifact
+    for kind in REQUIRED_REPORT_KINDS:
+        if kind not in by_kind:
+            raise MissingArtifactError(f"Missing required artifact kind: {kind}")
+    return by_kind
+
+
 def _content(artifact: dict[str, Any]) -> dict[str, Any]:
     payload = artifact.get("payload", {})
     content = payload.get("content")
@@ -128,6 +164,25 @@ def _validate_required_report_content(thread_id: str, by_kind: dict[str, dict[st
         raise MissingArtifactError(f"Missing three interview answers for {thread_id}")
 
 
+def _validate_required_chain_report_content(thread_id: str, by_kind: dict[str, dict[str, Any]]) -> None:
+    training = _content(by_kind["training_result"])
+    if not bool(training.get("has_submission")) or not _training_submission(training):
+        raise MissingArtifactError(
+            f"Thread {thread_id!r} has a training_result artifact, but the training answer is not submitted"
+        )
+    if training.get("score") is None:
+        raise MissingArtifactError(
+            f"Thread {thread_id!r} has a training_result artifact, but the training answer is not scored"
+        )
+
+    interview = _content(by_kind["interview_summary"])
+    turn_count = _chain_interview_turn_count(interview)
+    if turn_count < 3:
+        raise MissingArtifactError(
+            f"Thread {thread_id!r} has an interview_summary artifact, but fewer than three interview turns are complete"
+        )
+
+
 def _validate_training_submission(thread_id: str, artifact: dict[str, Any]) -> None:
     training = _content(artifact)
     if not bool(training.get("has_submission")) or not _training_submission(training):
@@ -141,6 +196,19 @@ def _training_submission(training: dict[str, Any]) -> str:
     if isinstance(submission, str) and submission.strip():
         return submission
     return ""
+
+
+def _chain_interview_turn_count(interview: dict[str, Any]) -> int:
+    turn_count = interview.get("turn_count")
+    if isinstance(turn_count, int):
+        return turn_count
+    answers = interview.get("answers")
+    if isinstance(answers, list):
+        return len(answers)
+    turns = interview.get("turns")
+    if isinstance(turns, list):
+        return len(turns)
+    return 0
 
 
 def _join_items(value: Any) -> str:
