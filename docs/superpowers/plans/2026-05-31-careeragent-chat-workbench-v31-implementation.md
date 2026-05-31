@@ -65,6 +65,7 @@ Create `backend/tests/test_chat_workbench_contracts.py`:
 ```python
 from app.schemas.memory import CompactionSnapshot, MemoryItem, MemoryScope, MemoryStatus
 from app.schemas.runs import (
+    ActiveArtifactFacts,
     ArtifactChainItem,
     ConversationMessage,
     ConversationRole,
@@ -110,8 +111,10 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
             intent=SupervisorIntent.MATCH,
             target_agent="match",
             required_input_artifact_kinds=["profile", "job_analysis"],
+            required_capabilities=[],
             expected_output_artifact_kinds=["match"],
             missing_prerequisites=[],
+            missing_capabilities=[],
             user_facing_reason="需要根据画像和岗位做匹配。",
             next_actions=["查看能力差距", "生成三个月计划"],
         ),
@@ -186,6 +189,26 @@ def test_workspace_response_uses_active_context_not_latest_kind() -> None:
     assert [item.id for item in response.artifact_chain] == ["job-first", "match-first"]
 
 
+def test_active_artifact_facts_distinguish_artifact_presence_from_completion() -> None:
+    facts = ActiveArtifactFacts(
+        has_profile=True,
+        has_job_analysis=True,
+        has_match=True,
+        has_plan=True,
+        has_training_result=True,
+        training_submitted=False,
+        training_scored=False,
+        has_interview_summary=True,
+        interview_turn_count=2,
+        interview_completed=False,
+    )
+
+    assert facts.has_training_result is True
+    assert facts.training_scored is False
+    assert facts.has_interview_summary is True
+    assert facts.interview_completed is False
+
+
 def test_memory_compaction_and_skill_runtime_refs_are_bounded_public_contracts() -> None:
     memory = MemoryItem(
         id="memory-1",
@@ -227,7 +250,7 @@ Run:
 cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py
 ```
 
-Expected: FAIL with import errors for `ArtifactChainItem`, `ConversationMessage`, `WorkspaceContext`, `MemoryItem`, or `SkillRuntimeRef`.
+Expected: FAIL with import errors for `ActiveArtifactFacts`, `ArtifactChainItem`, `ConversationMessage`, `WorkspaceContext`, `MemoryItem`, or `SkillRuntimeRef`.
 
 - [ ] **Step 3: Implement schemas in `backend/app/schemas/runs.py`**
 
@@ -281,6 +304,19 @@ class ArtifactChainItem(BaseModel):
     updated_at: str | None = None
 
 
+class ActiveArtifactFacts(BaseModel):
+    has_profile: bool = False
+    has_job_analysis: bool = False
+    has_match: bool = False
+    has_plan: bool = False
+    has_training_result: bool = False
+    training_submitted: bool = False
+    training_scored: bool = False
+    has_interview_summary: bool = False
+    interview_turn_count: int = 0
+    interview_completed: bool = False
+
+
 class WorkspaceContext(BaseModel):
     thread_id: str
     active_goal: str = "职业发展规划"
@@ -313,8 +349,10 @@ class SupervisorDecision(BaseModel):
     intent: SupervisorIntent
     target_agent: str
     required_input_artifact_kinds: list[str] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
     expected_output_artifact_kinds: list[str] = Field(default_factory=list)
     missing_prerequisites: list[str] = Field(default_factory=list)
+    missing_capabilities: list[str] = Field(default_factory=list)
     user_facing_reason: str
     next_actions: list[str] = Field(default_factory=list)
 
@@ -698,6 +736,8 @@ class JsonMemoryRepository:
     def get(self, thread_id: str, memory_id: str) -> MemoryItem:
         _validate_id(memory_id, "memory_id")
         path = self.memory_dir / f"{memory_id}.json"
+        if not path.exists():
+            raise KeyError(f"Memory item {memory_id!r} not found")
         item = MemoryItem.model_validate(json.loads(path.read_text(encoding="utf-8")))
         if item.thread_id != thread_id:
             raise KeyError(f"Memory item {memory_id!r} is not in thread {thread_id!r}")
@@ -788,7 +828,7 @@ Append to `backend/tests/test_chat_workbench_contracts.py`:
 
 ```python
 from app.agents.supervisor import decide_user_message
-from app.schemas.runs import SupervisorIntent
+from app.schemas.runs import ActiveArtifactFacts, SupervisorIntent
 
 
 def test_supervisor_decision_maps_training_submission_to_training_agent() -> None:
@@ -814,7 +854,62 @@ def test_supervisor_decision_reports_missing_prerequisites_for_report() -> None:
     assert decision.intent == SupervisorIntent.EXPORT_REPORT
     assert decision.target_agent == "report"
     assert decision.missing_prerequisites == ["training_result", "interview_summary"]
+    assert decision.missing_capabilities == []
     assert "训练" in decision.next_actions[0]
+
+
+def test_supervisor_blocks_interview_until_training_is_scored() -> None:
+    decision = decide_user_message(
+        "开始模拟面试",
+        available_artifact_kinds={"profile", "job_analysis", "match", "plan", "training_result"},
+        active_facts=ActiveArtifactFacts(
+            has_profile=True,
+            has_job_analysis=True,
+            has_match=True,
+            has_plan=True,
+            has_training_result=True,
+            training_submitted=False,
+            training_scored=False,
+        ),
+    )
+
+    assert decision.intent == SupervisorIntent.START_INTERVIEW
+    assert decision.missing_prerequisites == []
+    assert decision.required_capabilities == ["training_scored"]
+    assert decision.missing_capabilities == ["training_scored"]
+    assert "训练答案" in decision.next_actions[0]
+
+
+def test_supervisor_blocks_report_until_three_interview_turns_are_complete() -> None:
+    decision = decide_user_message(
+        "请导出报告",
+        available_artifact_kinds={
+            "profile",
+            "job_analysis",
+            "match",
+            "plan",
+            "training_result",
+            "interview_summary",
+        },
+        active_facts=ActiveArtifactFacts(
+            has_profile=True,
+            has_job_analysis=True,
+            has_match=True,
+            has_plan=True,
+            has_training_result=True,
+            training_submitted=True,
+            training_scored=True,
+            has_interview_summary=True,
+            interview_turn_count=2,
+            interview_completed=False,
+        ),
+    )
+
+    assert decision.intent == SupervisorIntent.EXPORT_REPORT
+    assert decision.missing_prerequisites == []
+    assert decision.required_capabilities == ["training_scored", "interview_completed"]
+    assert decision.missing_capabilities == ["interview_completed"]
+    assert "三轮模拟面试" in decision.next_actions[0]
 
 
 def test_supervisor_decision_prefers_profile_for_first_demo_prompt() -> None:
@@ -908,7 +1003,7 @@ def test_supervisor_uses_active_chain_kinds_before_thread_history(tmp_path: Path
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_blocks_interview_until_training_is_scored tests/test_chat_workbench_contracts.py::test_supervisor_blocks_report_until_three_interview_turns_are_complete tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: FAIL because `decide_user_message` and graph metadata fields do not exist.
@@ -918,7 +1013,7 @@ Expected: FAIL because `decide_user_message` and graph metadata fields do not ex
 In `backend/app/agents/supervisor.py`, add:
 
 ```python
-from app.schemas.runs import SupervisorDecision, SupervisorIntent
+from app.schemas.runs import ActiveArtifactFacts, SupervisorDecision, SupervisorIntent
 
 
 REQUIRED_BY_INTENT = {
@@ -931,6 +1026,20 @@ REQUIRED_BY_INTENT = {
     SupervisorIntent.START_INTERVIEW: ["profile", "job_analysis", "match", "plan", "training_result"],
     SupervisorIntent.ANSWER_INTERVIEW: ["profile", "job_analysis", "match", "plan", "training_result"],
     SupervisorIntent.EXPORT_REPORT: ["profile", "job_analysis", "match", "plan", "training_result", "interview_summary"],
+    SupervisorIntent.CLARIFY: [],
+}
+
+
+REQUIRED_CAPABILITIES_BY_INTENT = {
+    SupervisorIntent.BUILD_PROFILE: [],
+    SupervisorIntent.ANALYZE_JOB: [],
+    SupervisorIntent.MATCH: [],
+    SupervisorIntent.PLAN: [],
+    SupervisorIntent.CREATE_TRAINING: [],
+    SupervisorIntent.SUBMIT_TRAINING: [],
+    SupervisorIntent.START_INTERVIEW: ["training_scored"],
+    SupervisorIntent.ANSWER_INTERVIEW: ["training_scored"],
+    SupervisorIntent.EXPORT_REPORT: ["training_scored", "interview_completed"],
     SupervisorIntent.CLARIFY: [],
 }
 
@@ -966,19 +1075,34 @@ TARGET_BY_INTENT = {
 }
 
 
-def decide_user_message(message: str, available_artifact_kinds: set[str]) -> SupervisorDecision:
+def decide_user_message(
+    message: str,
+    available_artifact_kinds: set[str],
+    active_facts: ActiveArtifactFacts | None = None,
+) -> SupervisorDecision:
     intent = _detect_intent(message)
     required = REQUIRED_BY_INTENT[intent]
     missing = [kind for kind in required if kind not in available_artifact_kinds]
+    required_capabilities = REQUIRED_CAPABILITIES_BY_INTENT[intent]
+    missing_capabilities = [] if missing else _missing_capabilities(required_capabilities, active_facts)
     return SupervisorDecision(
         intent=intent,
         target_agent=TARGET_BY_INTENT[intent],
         required_input_artifact_kinds=required,
+        required_capabilities=required_capabilities,
         expected_output_artifact_kinds=EXPECTED_OUTPUT_BY_INTENT[intent],
         missing_prerequisites=missing,
-        user_facing_reason=_reason_for_intent(intent, missing),
-        next_actions=_next_actions_for_decision(intent, missing),
+        missing_capabilities=missing_capabilities,
+        user_facing_reason=_reason_for_intent(intent, missing, missing_capabilities),
+        next_actions=_next_actions_for_decision(intent, missing, missing_capabilities),
     )
+
+
+def _missing_capabilities(required: list[str], active_facts: ActiveArtifactFacts | None) -> list[str]:
+    if not required:
+        return []
+    facts = active_facts or ActiveArtifactFacts()
+    return [capability for capability in required if not bool(getattr(facts, capability))]
 
 
 def _detect_intent(message: str) -> SupervisorIntent:
@@ -1004,9 +1128,20 @@ def _detect_intent(message: str) -> SupervisorIntent:
     return SupervisorIntent.MATCH
 
 
-def _reason_for_intent(intent: SupervisorIntent, missing: list[str]) -> str:
+def _reason_for_intent(
+    intent: SupervisorIntent,
+    missing: list[str],
+    missing_capabilities: list[str],
+) -> str:
     if missing:
         return f"当前请求需要先补齐：{', '.join(missing)}。"
+    if missing_capabilities:
+        labels = {
+            "training_scored": "提交训练答案并完成评分",
+            "interview_completed": "完成三轮模拟面试",
+        }
+        readable = [labels.get(capability, capability) for capability in missing_capabilities]
+        return f"当前请求需要先完成：{', '.join(readable)}。"
     return {
         SupervisorIntent.BUILD_PROFILE: "需要先建立或更新学生职业画像。",
         SupervisorIntent.ANALYZE_JOB: "需要把目标岗位或 JD 拆成结构化岗位画像。",
@@ -1021,7 +1156,11 @@ def _reason_for_intent(intent: SupervisorIntent, missing: list[str]) -> str:
     }[intent]
 
 
-def _next_actions_for_decision(intent: SupervisorIntent, missing: list[str]) -> list[str]:
+def _next_actions_for_decision(
+    intent: SupervisorIntent,
+    missing: list[str],
+    missing_capabilities: list[str],
+) -> list[str]:
     if missing:
         actions = {
             "profile": "补充简历或画像",
@@ -1032,6 +1171,12 @@ def _next_actions_for_decision(intent: SupervisorIntent, missing: list[str]) -> 
             "interview_summary": "完成三轮模拟面试",
         }
         return [actions[kind] for kind in missing if kind in actions]
+    if missing_capabilities:
+        actions = {
+            "training_scored": "提交训练答案并完成评分",
+            "interview_completed": "完成三轮模拟面试",
+        }
+        return [actions[capability] for capability in missing_capabilities if capability in actions]
     return {
         SupervisorIntent.BUILD_PROFILE: ["继续补充目标岗位"],
         SupervisorIntent.ANALYZE_JOB: ["做匹配诊断"],
@@ -1060,7 +1205,13 @@ def supervisor_node(state: dict[str, Any], artifact_repo: ArtifactRepository) ->
         if isinstance(active_kinds, list)
         else {artifact["kind"] for artifact in artifact_repo.list_by_thread(career_state.thread_id)}
     )
-    decision = decide_user_message(career_state.user_message, available_kinds)
+    active_facts_payload = career_state.metadata.get("active_facts")
+    active_facts = (
+        ActiveArtifactFacts.model_validate(active_facts_payload)
+        if isinstance(active_facts_payload, dict)
+        else None
+    )
+    decision = decide_user_message(career_state.user_message, available_kinds, active_facts)
     target = decision.target_agent
     career_state.loaded_skill_refs = _append_unique(
         career_state.loaded_skill_refs,
@@ -1075,7 +1226,7 @@ def supervisor_node(state: dict[str, Any], artifact_repo: ArtifactRepository) ->
     )
     career_state.metadata["supervisor_decision"] = decision.model_dump(mode="json")
     career_state.active_agent = "supervisor"
-    if decision.missing_prerequisites:
+    if decision.missing_prerequisites or decision.missing_capabilities:
         career_state.pending_question = decision.user_facing_reason
         career_state.metadata["last_business_agent"] = None
         career_state.metadata["current_runtime_node"] = "supervisor"
@@ -1122,7 +1273,7 @@ current_runtime_node: str | None
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_blocks_interview_until_training_is_scored tests/test_chat_workbench_contracts.py::test_supervisor_blocks_report_until_three_interview_turns_are_complete tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: PASS.
@@ -1142,6 +1293,7 @@ git commit -m "Add supervisor decision contract"
 - Create: `backend/app/services/workspace.py`
 - Modify: `backend/app/artifacts/markdown.py`
 - Modify: `backend/tests/test_artifact_reporting.py`
+- Create: `backend/tests/test_workspace_service.py`
 - Modify: `backend/tests/test_api_e2e.py`
 
 - [ ] **Step 1: Write failing service tests**
@@ -1154,6 +1306,7 @@ from app.repositories.json_thread_repository import JsonWorkspaceContextReposito
 from app.schemas.runs import WorkspaceContext
 from app.services.workspace import (
     artifact_chain_from_context,
+    build_active_artifact_facts,
     build_workspace_response,
     update_context_from_artifacts,
 )
@@ -1202,6 +1355,33 @@ def test_update_context_from_artifacts_only_updates_created_kinds(tmp_path):
     assert context.updated_by_run_id == "run-1"
 
 
+def test_update_context_preserves_existing_goal_when_active_goal_is_none(tmp_path):
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-a",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            updated_by_run_id="run-profile",
+        )
+    )
+    artifact_repo.save("training_result", "training-1", {"content": {"has_submission": True}}, "thread-a", "training")
+
+    context = update_context_from_artifacts(
+        thread_id="thread-a",
+        run_id="run-training",
+        created_artifact_ids=["training-1"],
+        active_goal=None,
+        artifact_repo=artifact_repo,
+        context_repo=context_repo,
+    )
+
+    assert context.active_goal == "Agent 开发工程师"
+    assert context.active_training_result_id == "training-1"
+
+
 def test_new_job_invalidates_downstream_active_chain(tmp_path):
     artifact_repo = JsonArtifactRepository(tmp_path)
     context_repo = JsonWorkspaceContextRepository(tmp_path)
@@ -1235,6 +1415,48 @@ def test_new_job_invalidates_downstream_active_chain(tmp_path):
     assert context.active_match_id is None
     assert context.active_plan_id is None
     assert context.active_training_result_id is None
+
+
+def test_active_artifact_facts_require_submitted_training_and_three_interview_turns(tmp_path):
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-a", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-a", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-a", "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"task": "写一个 Agent demo", "has_submission": False, "score": None}},
+        "thread-a",
+        "training",
+    )
+    artifact_repo.save(
+        "interview_summary",
+        "interview-1",
+        {"content": {"turn_count": 2, "completed": False}},
+        "thread-a",
+        "interview",
+    )
+    context = WorkspaceContext(
+        thread_id="thread-a",
+        active_goal="Agent 开发",
+        active_profile_id="profile-1",
+        active_job_analysis_id="job-1",
+        active_match_id="match-1",
+        active_plan_id="plan-1",
+        active_training_result_id="training-1",
+        active_interview_summary_id="interview-1",
+        updated_by_run_id="run-1",
+    )
+
+    facts = build_active_artifact_facts(context, artifact_repo)
+
+    assert facts.has_training_result is True
+    assert facts.training_submitted is False
+    assert facts.training_scored is False
+    assert facts.has_interview_summary is True
+    assert facts.interview_turn_count == 2
+    assert facts.interview_completed is False
 
 
 def test_artifact_chain_from_context_ignores_missing_optional_ids(tmp_path):
@@ -1275,7 +1497,7 @@ from typing import Any
 
 from app.repositories.interfaces import ArtifactRepository
 from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
-from app.schemas.runs import ArtifactChainItem, WorkspaceContext, WorkspaceResponse
+from app.schemas.runs import ActiveArtifactFacts, ArtifactChainItem, WorkspaceContext, WorkspaceResponse
 
 
 CONTEXT_FIELD_BY_KIND = {
@@ -1326,7 +1548,7 @@ def update_context_from_artifacts(
     thread_id: str,
     run_id: str,
     created_artifact_ids: list[str],
-    active_goal: str,
+    active_goal: str | None,
     artifact_repo: ArtifactRepository,
     context_repo: JsonWorkspaceContextRepository,
 ) -> WorkspaceContext:
@@ -1336,7 +1558,10 @@ def update_context_from_artifacts(
         "active_goal": active_goal,
         "updated_by_run_id": run_id,
     }
-    values["active_goal"] = active_goal or values.get("active_goal") or "职业发展规划"
+    if active_goal:
+        values["active_goal"] = active_goal
+    else:
+        values["active_goal"] = values.get("active_goal") or "职业发展规划"
     values["updated_by_run_id"] = run_id
     values["updated_at"] = datetime.now(timezone.utc)
     for artifact_id in created_artifact_ids:
@@ -1397,6 +1622,41 @@ def build_workspace_response(
     )
 
 
+def build_active_artifact_facts(
+    context: WorkspaceContext,
+    artifact_repo: ArtifactRepository,
+) -> ActiveArtifactFacts:
+    training_payload = _artifact_content(context.active_training_result_id, context.thread_id, artifact_repo)
+    interview_payload = _artifact_content(context.active_interview_summary_id, context.thread_id, artifact_repo)
+    training_submitted = bool(training_payload.get("has_submission") or training_payload.get("submission"))
+    training_scored = training_submitted and training_payload.get("score") is not None
+    interview_turn_count = int(interview_payload.get("turn_count") or len(interview_payload.get("turns") or []))
+    interview_completed = bool(interview_payload.get("completed")) or interview_turn_count >= 3
+    return ActiveArtifactFacts(
+        has_profile=bool(context.active_profile_id),
+        has_job_analysis=bool(context.active_job_analysis_id),
+        has_match=bool(context.active_match_id),
+        has_plan=bool(context.active_plan_id),
+        has_training_result=bool(context.active_training_result_id),
+        training_submitted=training_submitted,
+        training_scored=training_scored,
+        has_interview_summary=bool(context.active_interview_summary_id),
+        interview_turn_count=interview_turn_count,
+        interview_completed=interview_completed,
+    )
+
+
+def _artifact_content(artifact_id: str | None, thread_id: str, artifact_repo: ArtifactRepository) -> dict[str, Any]:
+    if not artifact_id:
+        return {}
+    artifact = artifact_repo.get(artifact_id)
+    if artifact.get("source_thread_id") != thread_id:
+        return {}
+    payload = artifact.get("payload") or {}
+    content = payload.get("content") if isinstance(payload, dict) else {}
+    return content if isinstance(content, dict) else {}
+
+
 def _to_chain_item(artifact: dict[str, Any]) -> ArtifactChainItem:
     return ArtifactChainItem(
         id=artifact["id"],
@@ -1443,6 +1703,68 @@ def _required_artifacts_from_chain(thread_id: str, artifacts: list[dict[str, Any
         if kind not in by_kind:
             raise MissingArtifactError(f"Missing required artifact kind: {kind}")
     return by_kind
+
+
+def _validate_required_report_content(thread_id: str, by_kind: dict[str, dict[str, Any]]) -> None:
+    training_content = _payload_content(by_kind["training_result"])
+    if not training_content.get("has_submission") or training_content.get("score") is None:
+        raise MissingArtifactError(
+            f"Thread {thread_id!r} has a training_result artifact, but the training answer is not submitted and scored"
+        )
+    interview_content = _payload_content(by_kind["interview_summary"])
+    turn_count = int(interview_content.get("turn_count") or len(interview_content.get("turns") or []))
+    if turn_count < 3:
+        raise MissingArtifactError(
+            f"Thread {thread_id!r} has an interview_summary artifact, but fewer than three interview turns are complete"
+        )
+
+
+def _payload_content(artifact: dict[str, Any]) -> dict[str, Any]:
+    payload = artifact.get("payload") or {}
+    content = payload.get("content") if isinstance(payload, dict) else {}
+    return content if isinstance(content, dict) else {}
+```
+
+Append these report gating regressions to `backend/tests/test_artifact_reporting.py`:
+
+```python
+from app.artifacts.markdown import build_markdown_report_from_chain
+
+
+def test_markdown_report_from_chain_rejects_task_only_training_result() -> None:
+    artifacts = [
+        _artifact("profile", "profile", {"summary": "Python/FastAPI backend student"}),
+        _artifact("job_analysis", "job", {"summary": "Agent 开发工程师"}),
+        _artifact("match", "match", {"score": 74, "gaps": ["LangGraph 证据不足"]}),
+        _artifact("plan", "planning", {"milestones": ["补齐 LangGraph 项目证据"]}),
+        _artifact(
+            "training_result",
+            "training",
+            {"task": "写一个 Agent demo", "has_submission": False, "submission": None, "score": None},
+        ),
+        _artifact("interview_summary", "interview", {"turn_count": 3, "completed": True}),
+    ]
+
+    with pytest.raises(MissingArtifactError, match="training answer"):
+        build_markdown_report_from_chain("thread-report-producer", artifacts)
+
+
+def test_markdown_report_from_chain_rejects_interview_under_three_turns() -> None:
+    artifacts = [
+        _artifact("profile", "profile", {"summary": "Python/FastAPI backend student"}),
+        _artifact("job_analysis", "job", {"summary": "Agent 开发工程师"}),
+        _artifact("match", "match", {"score": 74, "gaps": ["LangGraph 证据不足"]}),
+        _artifact("plan", "planning", {"milestones": ["补齐 LangGraph 项目证据"]}),
+        _artifact(
+            "training_result",
+            "training",
+            {"has_submission": True, "submission": "demo", "score": 82},
+        ),
+        _artifact("interview_summary", "interview", {"turn_count": 2, "completed": False}),
+    ]
+
+    with pytest.raises(MissingArtifactError, match="fewer than three interview turns"):
+        build_markdown_report_from_chain("thread-report-producer", artifacts)
 ```
 
 - [ ] **Step 5: Run workspace service tests**
@@ -1562,6 +1884,101 @@ def test_runs_endpoint_marks_provider_error_retryable(tmp_path: Path, monkeypatc
     assert "模型服务" in payload["assistant_message"]["content"]
     messages = JsonConversationRepository(tmp_path).list_by_thread("thread-provider-error")
     assert [message.role.value for message in messages] == ["user", "assistant"]
+
+
+def test_start_interview_requires_submitted_training_result(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-training-gate", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-training-gate", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-training-gate", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-training-gate", "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"task": "写一个 Agent demo", "has_submission": False, "score": None}},
+        "thread-training-gate",
+        "training",
+    )
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-training-gate",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            active_training_result_id="training-1",
+            updated_by_run_id="seed",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/runs", json={"thread_id": "thread-training-gate", "message": "开始模拟面试"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "blocked_by_prerequisite"
+    assert payload["supervisor_decision"]["missing_capabilities"] == ["training_scored"]
+    assert JsonArtifactRepository(tmp_path).list_by_kind("thread-training-gate", "interview_summary") == []
+
+
+def test_blocked_match_request_does_not_create_memory_candidate(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_thread_repository import JsonMemoryRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/api/runs", json={"thread_id": "thread-blocked-memory", "message": "请做 match 分析"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "blocked_by_prerequisite"
+    assert payload["memory_updates"] == []
+    assert JsonMemoryRepository(tmp_path).list_by_thread("thread-blocked-memory") == []
+
+
+def test_training_submission_does_not_reset_active_goal(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-goal-preserve", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-goal-preserve", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-goal-preserve", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-goal-preserve", "planning")
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-goal-preserve",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            updated_by_run_id="seed",
+        )
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-goal-preserve", "message": "我的训练答案：我会设计 FastAPI + LangGraph demo。"},
+    )
+
+    assert response.status_code == 200
+    context = JsonWorkspaceContextRepository(tmp_path).get("thread-goal-preserve")
+    assert context.active_goal == "Agent 开发工程师"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1569,7 +1986,7 @@ def test_runs_endpoint_marks_provider_error_retryable(tmp_path: Path, monkeypatc
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable tests/test_api_e2e.py::test_start_interview_requires_submitted_training_result tests/test_api_e2e.py::test_blocked_match_request_does_not_create_memory_candidate tests/test_api_e2e.py::test_training_submission_does_not_reset_active_goal
 ```
 
 Expected: FAIL because `/api/runs` does not return v3.1 fields or persist messages.
@@ -1641,7 +2058,7 @@ from app.schemas.runs import (
     WorkspaceContext,
     WorkspaceDelta,
 )
-from app.services.workspace import artifact_chain_from_context, update_context_from_artifacts
+from app.services.workspace import artifact_chain_from_context, build_active_artifact_facts, update_context_from_artifacts
 
 
 class RunOrchestrator:
@@ -1669,6 +2086,7 @@ class RunOrchestrator:
         if current_context:
             run_metadata = {
                 "active_artifact_kinds": [item.kind for item in current_chain],
+                "active_facts": build_active_artifact_facts(current_context, self.artifact_repo).model_dump(mode="json"),
                 "active_context": current_context.model_dump(mode="json"),
             }
         try:
@@ -1784,10 +2202,10 @@ class RunOrchestrator:
         message: str,
         supervisor_decision: SupervisorDecision | None,
     ) -> list[MemoryItem]:
-        if supervisor_decision is None:
+        if supervisor_decision is None or supervisor_decision.missing_prerequisites or supervisor_decision.missing_capabilities:
             return []
         candidates: list[MemoryItem] = []
-        if supervisor_decision.intent.value in {"build_profile", "analyze_job", "match", "plan"}:
+        if supervisor_decision.intent.value in {"build_profile", "analyze_job", "plan"}:
             memory = MemoryItem(
                 id=f"memory-{uuid4().hex[:12]}",
                 thread_id=thread_id,
@@ -1841,10 +2259,10 @@ class RunOrchestrator:
         )
 
 
-def _active_goal(message: str, decision: SupervisorDecision | None) -> str:
+def _active_goal(message: str, decision: SupervisorDecision | None) -> str | None:
     if decision and decision.intent.value in {"analyze_job", "match", "plan"}:
         return message[:80]
-    return "职业发展规划"
+    return None
 
 
 def _assistant_summary(decision: SupervisorDecision | None, artifact_ids: list[str]) -> str:
@@ -1856,7 +2274,7 @@ def _assistant_summary(decision: SupervisorDecision | None, artifact_ids: list[s
 
 
 def _status_from_state(state: dict, decision: SupervisorDecision | None) -> RunStatus:
-    if decision and decision.missing_prerequisites:
+    if decision and (decision.missing_prerequisites or decision.missing_capabilities):
         return RunStatus.BLOCKED_BY_PREREQUISITE
     if state.get("pending_question"):
         return RunStatus.NEEDS_INPUT
@@ -1864,7 +2282,7 @@ def _status_from_state(state: dict, decision: SupervisorDecision | None) -> RunS
 
 
 def _blocking_reason(decision: SupervisorDecision | None) -> str | None:
-    if decision and decision.missing_prerequisites:
+    if decision and (decision.missing_prerequisites or decision.missing_capabilities):
         return decision.user_facing_reason
     return None
 
@@ -1905,7 +2323,7 @@ def create_run(request: RunRequest) -> RunResponse:
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable tests/test_api_e2e.py::test_start_interview_requires_submitted_training_result tests/test_api_e2e.py::test_blocked_match_request_does_not_create_memory_candidate tests/test_api_e2e.py::test_training_submission_does_not_reset_active_goal
 ```
 
 Expected: PASS.
@@ -1988,6 +2406,17 @@ def test_memory_confirm_and_reject_endpoints_update_status(tmp_path: Path, monke
     assert rejected.json()["status"] == "rejected"
 
 
+def test_memory_confirm_missing_item_returns_404(tmp_path: Path, monkeypatch) -> None:
+    from app.api import threads
+
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post("/api/threads/thread-memory-api/memory/not-found/confirm")
+
+    assert response.status_code == 404
+
+
 def test_report_export_updates_active_report_context(tmp_path: Path, monkeypatch) -> None:
     from app.api import reports, runs, threads
     from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
@@ -2007,6 +2436,77 @@ def test_report_export_updates_active_report_context(tmp_path: Path, monkeypatch
     assert report.status_code == 200
     context = JsonWorkspaceContextRepository(tmp_path).get(thread_id)
     assert context.active_report_id == f"report-{thread_id}-latest"
+
+
+def test_report_export_rejects_task_only_training_result(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    _seed_report_chain(artifact_repo, context_repo, "thread-report-training-gate", training_score=None, turn_count=3)
+    client = TestClient(app)
+
+    response = client.get("/api/reports/thread-report-training-gate/markdown")
+
+    assert response.status_code == 409
+    assert "training answer" in response.json()["detail"]
+
+
+def test_report_export_rejects_interview_summary_under_three_turns(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    _seed_report_chain(artifact_repo, context_repo, "thread-report-interview-gate", training_score=82, turn_count=2)
+    client = TestClient(app)
+
+    response = client.get("/api/reports/thread-report-interview-gate/markdown")
+
+    assert response.status_code == 409
+    assert "fewer than three interview turns" in response.json()["detail"]
+
+
+def _seed_report_chain(artifact_repo, context_repo, thread_id: str, training_score: int | None, turn_count: int) -> None:
+    from app.schemas.runs import WorkspaceContext
+
+    artifact_repo.save("profile", "profile-1", {"content": {}}, thread_id, "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, thread_id, "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, thread_id, "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, thread_id, "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"has_submission": training_score is not None, "submission": "demo", "score": training_score}},
+        thread_id,
+        "training",
+    )
+    artifact_repo.save(
+        "interview_summary",
+        "interview-1",
+        {"content": {"turn_count": turn_count, "completed": turn_count >= 3}},
+        thread_id,
+        "interview",
+    )
+    context_repo.save(
+        WorkspaceContext(
+            thread_id=thread_id,
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            active_training_result_id="training-1",
+            active_interview_summary_id="interview-1",
+            updated_by_run_id="seed",
+        )
+    )
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2014,7 +2514,7 @@ def test_report_export_updates_active_report_context(tmp_path: Path, monkeypatch
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_report_export_updates_active_report_context
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_memory_confirm_missing_item_returns_404 tests/test_api_e2e.py::test_report_export_updates_active_report_context tests/test_api_e2e.py::test_report_export_rejects_task_only_training_result tests/test_api_e2e.py::test_report_export_rejects_interview_summary_under_three_turns
 ```
 
 Expected: FAIL with 404 for `/api/threads/thread-workspace-api/workspace` and `/api/threads/thread-memory-api/memory/memory-api-1/confirm`.
@@ -2160,7 +2660,7 @@ update_context_from_artifacts(
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_report_export_updates_active_report_context tests/test_api_e2e.py::test_complete_backend_loop_exports_isolated_markdown_reports
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_memory_confirm_missing_item_returns_404 tests/test_api_e2e.py::test_report_export_updates_active_report_context tests/test_api_e2e.py::test_report_export_rejects_task_only_training_result tests/test_api_e2e.py::test_report_export_rejects_interview_summary_under_three_turns tests/test_api_e2e.py::test_complete_backend_loop_exports_isolated_markdown_reports
 ```
 
 Expected: PASS.
@@ -2263,6 +2763,25 @@ def test_runs_endpoint_returns_skill_runtime_refs_without_skill_body(tmp_path: P
     assert first_ref["skill_id"]
     assert first_ref["detail_level"] in {"summary", "full", "skipped"}
     assert "content" not in first_ref
+
+
+def test_runs_endpoint_returns_public_compaction_snapshot_after_memory_manager(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-compaction-api", "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compaction_snapshot"] is not None
+    dumped = str(payload["compaction_snapshot"]).lower()
+    assert "hidden_reasoning" not in dumped
+    assert "reasoning_content" not in dumped
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2270,7 +2789,7 @@ def test_runs_endpoint_returns_skill_runtime_refs_without_skill_body(tmp_path: P
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py::test_compact_state_uses_v31_schema_and_excludes_provider_reasoning tests/test_skill_loader.py::test_loader_returns_bounded_runtime_refs_by_intent_and_budget tests/test_skill_loader.py::test_loader_marks_skipped_when_budget_is_zero tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body
+cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py::test_compact_state_uses_v31_schema_and_excludes_provider_reasoning tests/test_skill_loader.py::test_loader_returns_bounded_runtime_refs_by_intent_and_budget tests/test_skill_loader.py::test_loader_marks_skipped_when_budget_is_zero tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body tests/test_api_e2e.py::test_runs_endpoint_returns_public_compaction_snapshot_after_memory_manager
 ```
 
 Expected: FAIL because schemas and loader output do not match v3.1.
@@ -2414,12 +2933,14 @@ In `backend/app/services/run_orchestrator.py`, include runtime refs in the respo
 used_skill_runtime_refs=state.get("loaded_skill_runtime_refs", []),
 ```
 
+Keep `memory_manager_node()` saving a `compaction_snapshot` artifact through `AgentRuntimeContext.save_artifact()` on every run, and ensure `update_context_from_artifacts()` receives that created artifact id so `_latest_compaction()` can return the public snapshot in `/api/runs`. The saved payload must come from `compact_state()` and must not include provider `reasoning_content`, hidden reasoning, or chain-of-thought fields.
+
 - [ ] **Step 6: Run memory and skill tests**
 
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py tests/test_skill_loader.py tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body
+cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py tests/test_skill_loader.py tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body tests/test_api_e2e.py::test_runs_endpoint_returns_public_compaction_snapshot_after_memory_manager
 ```
 
 Expected: PASS.
@@ -2555,8 +3076,10 @@ export interface SupervisorDecision {
   intent: string;
   target_agent: string;
   required_input_artifact_kinds: string[];
+  required_capabilities: string[];
   expected_output_artifact_kinds: string[];
   missing_prerequisites: string[];
+  missing_capabilities: string[];
   user_facing_reason: string;
   next_actions: string[];
 }
@@ -2969,6 +3492,10 @@ function content(kind: string): Record<string, unknown> {
   const payload = artifact(kind)?.payload as Record<string, unknown> | undefined;
   return (payload?.content as Record<string, unknown>) ?? payload ?? {};
 }
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
 </script>
 
 <template>
@@ -2985,7 +3512,7 @@ function content(kind: string): Record<string, unknown> {
             <strong>{{ workspace?.artifact_chain.length ?? 0 }} 个产物</strong>
           </article>
         </div>
-        <pre v-else-if="artifact(kind)" class="artifact-json">{{ content(kind) }}</pre>
+        <pre v-else-if="artifact(kind)" class="artifact-json">{{ pretty(content(kind)) }}</pre>
         <el-empty v-else description="还没有该模块产物，可以在右侧对话中请求生成" :image-size="64" />
       </el-tab-pane>
     </el-tabs>
@@ -3043,6 +3570,10 @@ defineProps<{
   workspace: WorkspaceResponse | null;
   demoMode: boolean;
 }>();
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
+}
 </script>
 
 <template>
@@ -3082,7 +3613,7 @@ defineProps<{
       <el-empty v-else description="暂无链路" :image-size="48" />
 
       <h3>Compaction</h3>
-      <pre v-if="lastRun?.compaction_snapshot" class="runtime-json">{{ lastRun.compaction_snapshot }}</pre>
+      <pre v-if="lastRun?.compaction_snapshot" class="runtime-json">{{ pretty(lastRun.compaction_snapshot) }}</pre>
 
       <h3>Memory Updates</h3>
       <div v-if="lastRun?.memory_updates?.length" class="chain-list">
@@ -3315,8 +3846,9 @@ Add this v3.1 flow to `docs/demo-script.md`:
 2. 在右侧对话栏输入：“我会 Python FastAPI，想匹配 Agent 开发岗位。”
 3. 观察中间画像 tab 出现 profile artifact，演示模式下 Runtime Drawer 显示业务 Agent 和最终 `memory_manager` 节点。
 4. 继续输入自定义 JD，请求匹配、规划、训练任务、训练答案、三轮面试和报告。
-5. 切换到演示模式，展示 active artifact chain、parent relationships、used skills、compaction snapshot。
-6. 导出 Markdown 报告，说明报告读取 active workspace context，不混用同线程其他目标岗位的历史 artifact。
+5. 在只有训练任务、尚未提交训练答案时尝试开始面试，确认系统提示需要先提交训练答案并完成评分。
+6. 切换到演示模式，展示 active artifact chain、parent relationships、used skills、compaction snapshot。
+7. 导出 Markdown 报告，说明报告读取 active workspace context，不混用同线程其他目标岗位的历史 artifact。
 ```
 
 - [ ] **Step 2: Run full backend tests**
@@ -3371,12 +3903,14 @@ Manual smoke script:
 3. Send: 请做 match 分析
 4. Send: 生成三个月路径规划
 5. Send: 根据能力差距给我一个训练任务
-6. Send: 我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。
-7. Send: 开始模拟面试
-8. Send: 回答1：我会用 StateGraph 定义节点和条件边。
-9. Send: 回答2：我会用 thread_id 和 checkpointer 保留会话状态。
-10. Send: 回答3：我会把评分结果保存为 Artifact 并进入报告。
-11. Click: 导出报告
+6. Send: 开始模拟面试
+7. Expect: 系统返回 blocked_by_prerequisite，提示先提交训练答案并完成评分，且不生成 interview_summary
+8. Send: 我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。
+9. Send: 开始模拟面试
+10. Send: 回答1：我会用 StateGraph 定义节点和条件边。
+11. Send: 回答2：我会用 thread_id 和 checkpointer 保留会话状态。
+12. Send: 回答3：我会把评分结果保存为 Artifact 并进入报告。
+13. Click: 导出报告
 ```
 
 Expected:
@@ -3385,6 +3919,7 @@ Expected:
 - Conversation shows user and assistant messages after refresh.
 - Workspace tabs show profile/job/match/plan/training/interview/report data.
 - Runtime drawer in demo mode shows last business agent, current runtime node, artifact chain, warnings, and compaction summary.
+- Runtime drawer and workspace tabs render JSON objects as formatted JSON, not `[object Object]`.
 - Exported report succeeds only after training submission and three interview answers.
 - Browser console has no app errors.
 ```
@@ -3417,21 +3952,22 @@ Expected: only the unrelated `agent申报书date20260511.docx` remains untracked
 - Spec coverage:
   - Active Workspace Context: Tasks 1, 2, 4, 5, 6, 10.
   - Active chain downstream invalidation: Task 4.
-  - Supervisor active-chain prerequisite checks: Tasks 3 and 5.
+  - Supervisor active-chain prerequisite checks and completion-state capabilities: Tasks 1, 3, 4, 5, 6, 11.
   - ConversationMessage persistence: Tasks 1, 2, 5, 6, 9, 10.
   - SupervisorDecision: Tasks 1, 3, 5, 9, 10.
   - run_status: Tasks 1, 5, 8, 9, 10.
   - Permission/failure error messages: Task 5.
   - workspace/messages API: Tasks 2, 4, 5, 6.
-  - Runtime student/demo modes: Tasks 9, 10, 11.
+  - Runtime student/demo modes and readable JSON rendering: Tasks 9, 10, 11.
   - Memory repository, memory updates, and confirmation: Tasks 1, 2, 5, 6, 7.
   - Compaction safety: Tasks 1, 7, 11.
   - Progressive Skill loading refs: Tasks 1, 7.
+  - Training submission, three-turn interview, and report export gates: Tasks 3, 4, 5, 6, 11.
   - v2.1 gates: Tasks 3, 4, 5, 6, 8, 11.
 - Placeholder scan:
   - No "TBD", "TODO", or vague "handle edge cases" steps.
   - Every task has concrete tests, implementation snippets, commands, expected results, and commit command.
 - Type consistency:
-  - `RunStatus`, `SupervisorDecision`, `WorkspaceContext`, `ConversationMessage`, `WorkspaceDelta`, `WorkspaceResponse`, `MemoryItem`, `CompactionSnapshot`, and `SkillRuntimeRef` names match across tests, backend code, and frontend types.
+  - `RunStatus`, `SupervisorDecision`, `ActiveArtifactFacts`, `WorkspaceContext`, `ConversationMessage`, `WorkspaceDelta`, `WorkspaceResponse`, `MemoryItem`, `CompactionSnapshot`, and `SkillRuntimeRef` names match across tests, backend code, and frontend types.
   - `artifact_chain` uses `ArtifactChainItem[]` everywhere.
   - `workspace_delta.updated_context` uses `WorkspaceContext`.
