@@ -39,10 +39,16 @@ def test_run_career_graph_persists_artifacts_and_supports_same_thread_followup(t
 
     first_records = repo.list_by_thread(thread_id)
     first_kinds = {record["kind"] for record in first_records}
+    first_compaction_run_ids = [
+        repo.get(record["id"])["payload"]["source_run_id"]
+        for record in first_records
+        if record["kind"] == "compaction_snapshot"
+    ]
     assert first.thread_id == thread_id
     assert first.active_agent == "memory_manager"
     assert "profile" in first_kinds
     assert "compaction_snapshot" in first_kinds
+    assert first_compaction_run_ids == [first.run_id]
     assert first.artifacts == first_records
     assert "profile/resume_parsing" in first.used_skill_refs
     assert "memory/context_compaction" in first.used_skill_refs
@@ -51,9 +57,15 @@ def test_run_career_graph_persists_artifacts_and_supports_same_thread_followup(t
 
     second_records = repo.list_by_thread(thread_id)
     second_kinds = {record["kind"] for record in second_records}
+    second_compaction_run_ids = [
+        repo.get(record["id"])["payload"]["source_run_id"]
+        for record in second_records
+        if record["kind"] == "compaction_snapshot"
+    ]
     assert second.thread_id == thread_id
     assert second.active_agent == "memory_manager"
     assert "match" in second_kinds
+    assert second.run_id in second_compaction_run_ids
     assert len(second_records) > len(first_records)
     assert set(first.artifacts[0]) == {"id", "kind", "source_thread_id", "source_agent"}
     assert {record["id"] for record in first_records}.issubset({record["id"] for record in second_records})
@@ -82,6 +94,26 @@ def test_graph_get_state_restores_checkpoint_for_same_thread(tmp_path: Path) -> 
 
     assert set(first_artifact_ids).issubset(set(restored_state.values["artifact_ids"]))
     assert restored_state.values["compaction_snapshot_id"] in restored_state.values["artifact_ids"]
+
+
+def test_direct_graph_invoke_without_run_id_uses_fresh_compaction_run_id_each_time(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "direct-run-id-thread"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    graph.invoke({"thread_id": thread_id, "user_message": "请从我的 resume 建立 profile"}, config=config)
+    graph.invoke({"thread_id": thread_id, "user_message": "生成三个月路径规划"}, config=config)
+
+    compaction_records = [
+        repo.get(artifact["id"]) for artifact in repo.list_by_kind(thread_id=thread_id, kind="compaction_snapshot")
+    ]
+    source_run_ids = [record["payload"]["source_run_id"] for record in compaction_records]
+
+    assert len(source_run_ids) >= 2
+    assert len(source_run_ids) == len(set(source_run_ids))
+    assert all(source_run_id.startswith("run-") for source_run_id in source_run_ids)
+    assert "run-unknown" not in source_run_ids
 
 
 def test_graph_handles_thread_ids_that_are_not_safe_artifact_ids(tmp_path: Path) -> None:

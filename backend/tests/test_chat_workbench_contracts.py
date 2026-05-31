@@ -114,6 +114,11 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
     assert WorkspaceDelta.model_fields["updated_context"].is_required()
 
 
+def test_supervisor_decision_requires_route_target_and_user_reason() -> None:
+    assert SupervisorDecision.model_fields["target_agent"].is_required()
+    assert SupervisorDecision.model_fields["user_facing_reason"].is_required()
+
+
 def test_run_response_accepts_raw_compaction_snapshot_payload() -> None:
     response = RunResponse(
         run_id="run-1",

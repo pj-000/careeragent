@@ -5,15 +5,14 @@ from uuid import uuid4
 
 from app.agents.manifests import AGENT_MANIFESTS
 from app.agents.runtime import coerce_state, make_runtime, next_artifact_id
-from app.graphs.state import AgentSnapshot
+from app.graphs.state import AgentSnapshot, CareerAgentState
 from app.memory.compaction import compact_state
 from app.repositories.interfaces import ArtifactRepository
 
 
 def memory_manager_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> dict[str, Any]:
     career_state = coerce_state(state)
-    if not career_state.metadata.get("run_id"):
-        career_state.metadata["run_id"] = f"run-{uuid4().hex[:12]}"
+    _ensure_current_run_id(career_state)
     runtime = make_runtime(career_state, "memory_manager", artifact_repo)
     for scope in AGENT_MANIFESTS["memory_manager"].readable_memory_scopes:
         runtime.read_memory(scope)
@@ -53,3 +52,11 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
         if item not in values:
             values.append(item)
     return values
+
+
+def _ensure_current_run_id(career_state: CareerAgentState) -> None:
+    explicit_run_id = career_state.metadata.pop("_explicit_run_id", False)
+    run_id = career_state.metadata.get("run_id")
+    if explicit_run_id and isinstance(run_id, str) and run_id.strip():
+        return
+    career_state.metadata["run_id"] = f"run-{uuid4().hex[:12]}"

@@ -90,13 +90,13 @@ class ConversationMessage(BaseModel):
 
 class SupervisorDecision(BaseModel):
     intent: SupervisorIntent
-    target_agent: str | None = None
+    target_agent: str
     required_input_artifact_kinds: list[str] = Field(default_factory=list)
     required_capabilities: list[str] = Field(default_factory=list)
     expected_output_artifact_kinds: list[str] = Field(default_factory=list)
     missing_prerequisites: list[str] = Field(default_factory=list)
     missing_capabilities: list[str] = Field(default_factory=list)
-    user_facing_reason: str | None = None
+    user_facing_reason: str
     next_actions: list[str] = Field(default_factory=list)
 
 
