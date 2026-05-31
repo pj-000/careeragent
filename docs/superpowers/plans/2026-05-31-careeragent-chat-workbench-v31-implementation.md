@@ -837,15 +837,37 @@ def test_graph_state_records_supervisor_decision_and_business_agent(tmp_path: Pa
     config = {"configurable": {"thread_id": "decision-thread"}}
 
     state = graph.invoke(
-        {"thread_id": "decision-thread", "user_message": "请做 match 分析"},
+        {
+            "thread_id": "decision-thread",
+            "user_message": "请做 match 分析",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis"]},
+        },
         config=config,
     )
 
     decision = state["metadata"]["supervisor_decision"]
     assert decision["intent"] == "match"
     assert decision["target_agent"] == "match"
+    assert decision["missing_prerequisites"] == []
     assert state["metadata"]["last_business_agent"] == "match"
     assert state["metadata"]["current_runtime_node"] == "memory_manager"
+
+
+def test_match_without_prerequisites_is_blocked(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+
+    state = graph.invoke(
+        {"thread_id": "missing-match-thread", "user_message": "请做 match 分析"},
+        config={"configurable": {"thread_id": "missing-match-thread"}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "match"
+    assert decision["target_agent"] == "match"
+    assert decision["missing_prerequisites"] == ["profile", "job_analysis"]
+    assert state["metadata"]["last_business_agent"] is None
+    assert repo.list_by_kind("missing-match-thread", "match") == []
 
 
 def test_missing_prerequisites_do_not_execute_target_agent(tmp_path: Path) -> None:
@@ -886,7 +908,7 @@ def test_supervisor_uses_active_chain_kinds_before_thread_history(tmp_path: Path
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: FAIL because `decide_user_message` and graph metadata fields do not exist.
@@ -918,6 +940,9 @@ EXPECTED_OUTPUT_BY_INTENT = {
     SupervisorIntent.ANALYZE_JOB: ["job_analysis"],
     SupervisorIntent.MATCH: ["match"],
     SupervisorIntent.PLAN: ["plan"],
+    # MVP v3.1 keeps the v2.1 `training_result` artifact for compatibility.
+    # Its payload must distinguish task-only, submitted answer, and scored result
+    # fields with `has_submission`, `submission`, and `score`.
     SupervisorIntent.CREATE_TRAINING: ["training_result"],
     SupervisorIntent.SUBMIT_TRAINING: ["training_result"],
     SupervisorIntent.START_INTERVIEW: ["interview_summary"],
@@ -1097,7 +1122,7 @@ current_runtime_node: str | None
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_match_without_prerequisites_is_blocked tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: PASS.
@@ -1445,6 +1470,7 @@ git commit -m "Add active workspace context service"
 - Create: `backend/app/services/run_orchestrator.py`
 - Modify: `backend/app/graphs/workflow.py`
 - Modify: `backend/app/api/runs.py`
+- Modify: `backend/app/providers/base.py`
 - Modify: `backend/tests/test_api_e2e.py`
 
 - [ ] **Step 1: Write failing `/api/runs` E2E test**
@@ -1475,10 +1501,12 @@ def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_pa
     assert payload["workspace_delta"]["updated_context"]["active_profile_id"]
     assert payload["artifact_chain"][0]["kind"] == "profile"
     assert payload["memory_updates"]
+    assert len(payload["memory_updates"]) == 1
 
     messages = JsonConversationRepository(tmp_path).list_by_thread("thread-v31-run")
     assert [message.role.value for message in messages] == ["user", "assistant"]
     assert messages[1].artifact_refs == payload["assistant_message"]["artifact_refs"]
+    assert payload["memory_updates"][0]["source_message_id"] == messages[0].id
     assert JsonWorkspaceContextRepository(tmp_path).get("thread-v31-run").active_profile_id
 
 
@@ -1507,6 +1535,33 @@ def test_runs_endpoint_persists_assistant_error_message_on_permission_denied(tmp
     assert payload["retryable"] is False
     messages = JsonConversationRepository(tmp_path).list_by_thread("thread-permission-error")
     assert [message.role.value for message in messages] == ["user", "assistant"]
+
+
+def test_runs_endpoint_marks_provider_error_retryable(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.providers.base import ProviderError
+    from app.repositories.json_thread_repository import JsonConversationRepository
+    from app.services import run_orchestrator
+
+    def fail_provider(*args, **kwargs):
+        raise ProviderError("qwen upstream timeout")
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(run_orchestrator, "run_career_graph", fail_provider)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-provider-error", "message": "请分析岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "provider_error"
+    assert payload["retryable"] is True
+    assert "模型服务" in payload["assistant_message"]["content"]
+    messages = JsonConversationRepository(tmp_path).list_by_thread("thread-provider-error")
+    assert [message.role.value for message in messages] == ["user", "assistant"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1514,12 +1569,19 @@ def test_runs_endpoint_persists_assistant_error_message_on_permission_denied(tmp
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable
 ```
 
 Expected: FAIL because `/api/runs` does not return v3.1 fields or persist messages.
 
 - [ ] **Step 3: Allow workflow to accept a run id**
+
+Define the provider exception used by the orchestrator in `backend/app/providers/base.py`:
+
+```python
+class ProviderError(RuntimeError):
+    pass
+```
 
 Modify `run_career_graph()` in `backend/app/graphs/workflow.py`:
 
@@ -1565,8 +1627,10 @@ from uuid import uuid4
 
 from app.agents.runtime import PermissionDenied
 from app.graphs.workflow import run_career_graph
+from app.providers.base import ProviderError
 from app.repositories.json_repository import JsonArtifactRepository
 from app.repositories.json_thread_repository import JsonConversationRepository, JsonMemoryRepository, JsonWorkspaceContextRepository
+from app.schemas.memory import MemoryItem, MemoryScope, MemoryStatus
 from app.schemas.runs import (
     ArtifactChainItem,
     ConversationMessage,
@@ -1601,17 +1665,19 @@ class RunOrchestrator:
         before_ids = {artifact["id"] for artifact in self.artifact_repo.list_by_thread(thread_id)}
         current_context = self.context_repo.get(thread_id)
         current_chain = artifact_chain_from_context(current_context, self.artifact_repo) if current_context else []
-        active_artifact_kinds = [item.kind for item in current_chain]
+        run_metadata = {}
+        if current_context:
+            run_metadata = {
+                "active_artifact_kinds": [item.kind for item in current_chain],
+                "active_context": current_context.model_dump(mode="json"),
+            }
         try:
             state, trace = run_career_graph(
                 thread_id,
                 message,
                 self.artifact_repo,
                 run_id=run_id,
-                metadata={
-                    "active_artifact_kinds": active_artifact_kinds,
-                    "active_context": current_context.model_dump(mode="json") if current_context else None,
-                },
+                metadata=run_metadata,
             )
         except PermissionDenied as exc:
             return self._error_response(
@@ -1620,6 +1686,15 @@ class RunOrchestrator:
                 content="当前 Agent 没有权限执行该操作。",
                 run_status=RunStatus.PERMISSION_DENIED,
                 retryable=False,
+                warning=str(exc),
+            )
+        except ProviderError as exc:
+            return self._error_response(
+                thread_id=thread_id,
+                run_id=run_id,
+                content="模型服务暂时不可用，可以稍后重试或切换 Mock Provider。",
+                run_status=RunStatus.PROVIDER_ERROR,
+                retryable=True,
                 warning=str(exc),
             )
         except Exception as exc:
@@ -1710,7 +1785,7 @@ class RunOrchestrator:
         supervisor_decision: SupervisorDecision | None,
     ) -> list[MemoryItem]:
         if supervisor_decision is None:
-            return self.memory_repo.list_by_thread(thread_id)
+            return []
         candidates: list[MemoryItem] = []
         if supervisor_decision.intent.value in {"build_profile", "analyze_job", "match", "plan"}:
             memory = MemoryItem(
@@ -1723,7 +1798,7 @@ class RunOrchestrator:
                 status=MemoryStatus.PENDING_CONFIRMATION,
             )
             candidates.append(self.memory_repo.save(memory))
-        return self.memory_repo.list_by_thread(thread_id)
+        return candidates
 
     def _error_response(
         self,
@@ -1759,7 +1834,7 @@ class RunOrchestrator:
             artifacts=self.artifact_repo.list_by_thread(thread_id),
             artifact_chain=chain,
             workspace_delta=WorkspaceDelta(created_artifacts=[], updated_context=context),
-            memory_updates=self.memory_repo.list_by_thread(thread_id),
+            memory_updates=[],
             retryable=retryable,
             next_actions=["重试本轮请求"] if retryable else ["调整请求后继续"],
             warnings=[warning],
@@ -1830,7 +1905,7 @@ def create_run(request: RunRequest) -> RunResponse:
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied tests/test_api_e2e.py::test_runs_endpoint_marks_provider_error_retryable
 ```
 
 Expected: PASS.
@@ -1838,7 +1913,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/app/services/run_orchestrator.py backend/app/graphs/workflow.py backend/app/api/runs.py backend/tests/test_api_e2e.py
+git add backend/app/services/run_orchestrator.py backend/app/graphs/workflow.py backend/app/api/runs.py backend/app/providers/base.py backend/tests/test_api_e2e.py
 git commit -m "Orchestrate v31 chat runs"
 ```
 
@@ -1996,7 +2071,7 @@ def get_memory(thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)]) 
 @router.post("/{thread_id}/memory/{memory_id}/confirm", response_model=MemoryItem)
 def confirm_memory(
     thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)],
-    memory_id: str,
+    memory_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)],
 ) -> MemoryItem:
     try:
         return JsonMemoryRepository(RUNTIME_DATA_DIR).set_status(thread_id, memory_id, MemoryStatus.CONFIRMED)
@@ -2007,7 +2082,7 @@ def confirm_memory(
 @router.post("/{thread_id}/memory/{memory_id}/reject", response_model=MemoryItem)
 def reject_memory(
     thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)],
-    memory_id: str,
+    memory_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)],
 ) -> MemoryItem:
     try:
         return JsonMemoryRepository(RUNTIME_DATA_DIR).set_status(thread_id, memory_id, MemoryStatus.REJECTED)
@@ -2109,6 +2184,7 @@ git commit -m "Expose chat workspace thread APIs"
 - Modify: `backend/app/agents/runtime.py`
 - Modify: `backend/tests/test_memory_compaction.py`
 - Modify: `backend/tests/test_skill_loader.py`
+- Modify: `backend/tests/test_api_e2e.py`
 
 - [ ] **Step 1: Write failing memory and skill tests**
 
@@ -2166,12 +2242,35 @@ def test_loader_marks_skipped_when_budget_is_zero() -> None:
     assert all(skill.content == "" for skill in loaded)
 ```
 
+Update `backend/tests/test_api_e2e.py` with an API-level regression proving runtime refs reach `/api/runs` without leaking skill bodies:
+
+```python
+def test_runs_endpoint_returns_skill_runtime_refs_without_skill_body(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-skill-ref-api", "message": "我会 Python FastAPI，想匹配 Agent 开发岗位"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["used_skill_runtime_refs"]
+    first_ref = payload["used_skill_runtime_refs"][0]
+    assert first_ref["skill_id"]
+    assert first_ref["detail_level"] in {"summary", "full", "skipped"}
+    assert "content" not in first_ref
+```
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py::test_compact_state_uses_v31_schema_and_excludes_provider_reasoning tests/test_skill_loader.py::test_loader_returns_bounded_runtime_refs_by_intent_and_budget tests/test_skill_loader.py::test_loader_marks_skipped_when_budget_is_zero
+cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py::test_compact_state_uses_v31_schema_and_excludes_provider_reasoning tests/test_skill_loader.py::test_loader_returns_bounded_runtime_refs_by_intent_and_budget tests/test_skill_loader.py::test_loader_marks_skipped_when_budget_is_zero tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body
 ```
 
 Expected: FAIL because schemas and loader output do not match v3.1.
@@ -2288,10 +2387,25 @@ Keep artifact payloads storing `skill_refs`, not full skill bodies. Add the help
 
 ```python
 def append_skill_runtime_refs(state: CareerAgentState, refs: list[dict[str, Any]]) -> None:
-    existing_ids = {ref.get("skill_id") for ref in state.loaded_skill_runtime_refs}
+    existing_keys = {
+        (
+            ref.get("skill_id"),
+            ref.get("version"),
+            tuple(ref.get("section_ids") or []),
+            ref.get("detail_level"),
+        )
+        for ref in state.loaded_skill_runtime_refs
+    }
     for ref in refs:
-        if ref.get("skill_id") not in existing_ids:
+        key = (
+            ref.get("skill_id"),
+            ref.get("version"),
+            tuple(ref.get("section_ids") or []),
+            ref.get("detail_level"),
+        )
+        if key not in existing_keys:
             state.loaded_skill_runtime_refs.append(ref)
+            existing_keys.add(key)
 ```
 
 In `backend/app/services/run_orchestrator.py`, include runtime refs in the response:
@@ -2305,7 +2419,7 @@ used_skill_runtime_refs=state.get("loaded_skill_runtime_refs", []),
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py tests/test_skill_loader.py
+cd backend && .venv/bin/python -m pytest -q tests/test_memory_compaction.py tests/test_skill_loader.py tests/test_api_e2e.py::test_runs_endpoint_returns_skill_runtime_refs_without_skill_body
 ```
 
 Expected: PASS.
@@ -2313,7 +2427,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/app/memory/compaction.py backend/app/memory/manager.py backend/app/skills/loader.py backend/app/schemas/skills.py backend/app/graphs/state.py backend/app/agents/runtime.py backend/tests/test_memory_compaction.py backend/tests/test_skill_loader.py
+git add backend/app/memory/compaction.py backend/app/memory/manager.py backend/app/skills/loader.py backend/app/schemas/skills.py backend/app/graphs/state.py backend/app/agents/runtime.py backend/tests/test_memory_compaction.py backend/tests/test_skill_loader.py backend/tests/test_api_e2e.py
 git commit -m "Bound memory compaction and skill refs"
 ```
 
