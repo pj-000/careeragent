@@ -1,0 +1,86 @@
+from pathlib import Path
+
+from app.agents.manifests import AGENT_MANIFESTS
+from app.schemas.skills import LoadedSkill, SkillDocument
+from app.skills.loader import SkillLoader
+from app.skills.registry import AGENT_SKILLS, SkillRegistry
+
+
+def test_registry_reads_markdown_frontmatter_and_body(tmp_path: Path) -> None:
+    skill_path = tmp_path / "profile" / "resume_parsing.md"
+    skill_path.parent.mkdir()
+    skill_path.write_text(
+        """---
+id: profile/resume_parsing
+version: 1
+agent_scope: profile
+tags:
+  - resume
+  - profile
+summary: Extract structured career facts from a resume.
+token_budget: 320
+---
+# Resume Parsing
+
+## 输入
+Resume text.
+
+## 输出
+Structured profile fields.
+""",
+        encoding="utf-8",
+    )
+
+    document = SkillRegistry(tmp_path).get("profile/resume_parsing")
+
+    assert isinstance(document, SkillDocument)
+    assert document.id == "profile/resume_parsing"
+    assert document.version == 1
+    assert document.agent_scope == "profile"
+    assert document.tags == ["resume", "profile"]
+    assert document.summary == "Extract structured career facts from a resume."
+    assert document.token_budget == 320
+    assert document.body.startswith("# Resume Parsing")
+    assert "---" not in document.body
+
+
+def test_builtin_registry_resolves_profile_resume_parsing() -> None:
+    document = SkillRegistry.builtin().get("profile/resume_parsing")
+
+    assert document.id == "profile/resume_parsing"
+    assert document.version == 1
+    assert document.summary
+    assert "# " in document.body
+    assert "## 输入" in document.body
+    assert "## 输出" in document.body
+
+
+def test_loader_resolves_match_skills_with_versioned_refs_and_summaries() -> None:
+    loaded = SkillLoader.builtin().resolve_for_agent("match", "gap_analysis", budget=1200)
+
+    assert [skill.ref for skill in loaded] == [
+        "match/match_scoring_rubric@v1",
+        "match/gap_diagnosis@v1",
+    ]
+    assert all(isinstance(skill, LoadedSkill) for skill in loaded)
+    assert all(skill.summary for skill in loaded)
+    assert all(skill.content for skill in loaded)
+
+
+def test_loader_downgrades_content_to_summary_when_budget_is_too_small() -> None:
+    loaded = SkillLoader.builtin().resolve_for_agent("match", "gap_analysis", budget=1)
+
+    assert [skill.ref for skill in loaded] == [
+        "match/match_scoring_rubric@v1",
+        "match/gap_diagnosis@v1",
+    ]
+    assert all(skill.content == skill.summary for skill in loaded)
+
+
+def test_agent_skills_align_with_manifest_skill_refs() -> None:
+    manifest_refs = {
+        agent_id: manifest.skill_policy.default_skill_ids
+        for agent_id, manifest in AGENT_MANIFESTS.items()
+    }
+
+    assert AGENT_SKILLS == manifest_refs
