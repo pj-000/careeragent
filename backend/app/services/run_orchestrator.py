@@ -13,7 +13,7 @@ from app.repositories.json_thread_repository import (
     JsonMemoryRepository,
     JsonWorkspaceContextRepository,
 )
-from app.schemas.memory import MemoryItem, MemoryScope, MemoryStatus
+from app.schemas.memory import CompactionSnapshot, MemoryItem, MemoryScope, MemoryStatus
 from app.schemas.runs import (
     ArtifactChainItem,
     ConversationMessage,
@@ -429,5 +429,11 @@ def _latest_compaction(chain: list[ArtifactChainItem], artifact_repo: JsonArtifa
         except (FileNotFoundError, KeyError, ValueError):
             return None
         payload = artifact.get("payload")
-        return payload if isinstance(payload, dict) else None
+        if not isinstance(payload, dict):
+            return None
+        allowed = {field: payload[field] for field in CompactionSnapshot.model_fields if field in payload}
+        try:
+            return CompactionSnapshot.model_validate(allowed).model_dump(mode="json")
+        except ValueError:
+            return None
     return None

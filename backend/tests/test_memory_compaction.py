@@ -1,5 +1,8 @@
 from app.graphs.state import AgentSnapshot, CareerAgentState
 from app.memory.compaction import compact_state
+from app.repositories.json_repository import JsonArtifactRepository
+from app.schemas.runs import ArtifactChainItem
+from app.services.run_orchestrator import _latest_compaction
 from app.memory.manager import MemoryManager
 from app.schemas.memory import CompactionSnapshot, LongTermMemoryItem
 
@@ -140,6 +143,48 @@ def test_compact_state_uses_v31_schema_and_excludes_provider_reasoning() -> None
     assert "hidden_reasoning" not in dumped_text
     assert "chain_of_thought" not in dumped_text
     assert "reasoning_content" not in dumped_text
+
+
+def test_latest_compaction_response_is_schema_bounded(tmp_path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    repo.save(
+        "compaction_snapshot",
+        "compact-malicious",
+        {
+            "id": "compact-malicious",
+            "thread_id": "thread-compact-sanitize",
+            "source_run_id": "run-1",
+            "current_goal": "Agent 开发",
+            "confirmed_facts": [],
+            "decisions_made": [],
+            "active_artifact_refs": [],
+            "next_actions": [],
+            "dropped_context_summary": "公开摘要",
+            "hidden_reasoning": "private",
+            "reasoning_content": "private",
+            "chain_of_thought": "private",
+        },
+        "thread-compact-sanitize",
+        "memory_manager",
+    )
+
+    snapshot = _latest_compaction(
+        [
+            ArtifactChainItem(
+                id="compact-malicious",
+                kind="compaction_snapshot",
+                source_thread_id="thread-compact-sanitize",
+                source_agent="memory_manager",
+            )
+        ],
+        repo,
+    )
+    dumped = str(snapshot).lower()
+
+    assert snapshot["id"] == "compact-malicious"
+    assert "hidden_reasoning" not in dumped
+    assert "reasoning_content" not in dumped
+    assert "chain_of_thought" not in dumped
 
 
 def test_compact_state_uses_user_message_when_no_assistant_message_exists() -> None:

@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.agents.manifests import AGENT_MANIFESTS
+from app.agents.runtime import append_skill_runtime_refs
 from app.schemas.skills import LoadedSkill, SkillDocument
 from app.skills.loader import SkillLoader
 from app.skills.registry import AGENT_SKILLS, SkillRegistry
@@ -92,6 +93,18 @@ def test_loader_marks_skipped_when_budget_is_zero() -> None:
 
     assert all(skill.runtime_ref.detail_level == "skipped" for skill in loaded)
     assert all(skill.content == "" for skill in loaded)
+
+
+def test_runtime_ref_dedup_keeps_same_skill_with_different_sections() -> None:
+    create_ref = SkillLoader.builtin().resolve_for_agent("training", "create_training", budget=1200)[0]
+    submit_ref = SkillLoader.builtin().resolve_for_agent("training", "submit_training", budget=1200)[0]
+
+    refs = append_skill_runtime_refs([], [create_ref.runtime_ref])
+    refs = append_skill_runtime_refs(refs, [submit_ref.runtime_ref])
+
+    assert create_ref.runtime_ref.skill_id == submit_ref.runtime_ref.skill_id
+    assert create_ref.runtime_ref.section_ids != submit_ref.runtime_ref.section_ids
+    assert len(refs) == 2
 
 
 def test_agent_skills_align_with_manifest_skill_refs() -> None:

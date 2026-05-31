@@ -235,6 +235,26 @@ def test_runs_endpoint_returns_public_compaction_snapshot_after_memory_manager(t
     assert "reasoning_content" not in dumped
 
 
+def test_report_run_returns_bounded_skill_runtime_refs(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+    thread_id = "thread-report-skill-refs"
+
+    response = None
+    for message in complete_demo_messages("REPORT_SKILL_REF"):
+        response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
+        assert response.status_code == 200
+
+    payload = response.json()
+    report_refs = [
+        ref for ref in payload["used_skill_runtime_refs"] if ref["skill_id"] == "report/markdown_report"
+    ]
+    assert report_refs
+    assert all("content" not in ref for ref in report_refs)
+
+
 def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monkeypatch) -> None:
     from app.api import reports, runs, threads
 

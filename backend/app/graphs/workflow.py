@@ -135,6 +135,7 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         missing_capabilities=_missing_capabilities(metadata),
         agent_trace_summary=trace,
         used_skill_refs=state.get("loaded_skill_refs", []),
+        used_skill_runtime_refs=state.get("loaded_skill_runtime_refs", []),
         artifacts=artifacts,
         next_actions=_next_actions(state),
         warnings=state.get("warnings", []),

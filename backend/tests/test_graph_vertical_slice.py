@@ -52,6 +52,8 @@ def test_run_career_graph_persists_artifacts_and_supports_same_thread_followup(t
     assert first_compaction_run_ids == [first.run_id]
     assert first.artifacts == first_records
     assert "profile/resume_parsing" in first.used_skill_refs
+    assert first.used_skill_runtime_refs
+    assert first.used_skill_runtime_refs[0].skill_id
     assert "memory/context_compaction" in first.used_skill_refs
 
     second = run_career_graph(thread_id, "请分析 Agent 开发岗位 JD", repo)

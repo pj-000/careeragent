@@ -187,6 +187,7 @@ def append_skill_runtime_refs(
         (
             str(item.get("skill_id")),
             str(item.get("version")),
+            tuple(str(section_id) for section_id in item.get("section_ids", [])),
             str(item.get("detail_level")),
         )
         for item in values
@@ -197,6 +198,7 @@ def append_skill_runtime_refs(
         key = (
             str(ref_payload.get("skill_id")),
             str(ref_payload.get("version")),
+            tuple(str(section_id) for section_id in ref_payload.get("section_ids", [])),
             str(ref_payload.get("detail_level")),
         )
         if key not in seen:
