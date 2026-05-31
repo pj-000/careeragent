@@ -23,6 +23,9 @@ class CareerAgentState(BaseModel):
     pending_question: str | None = None
     compaction_snapshot_id: str | None = None
     next_agent: str | None = None
+    supervisor_decision: dict[str, Any] | None = None
+    last_business_agent: str | None = None
+    current_runtime_node: str | None = None
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

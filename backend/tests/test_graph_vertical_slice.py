@@ -53,22 +53,27 @@ def test_run_career_graph_persists_artifacts_and_supports_same_thread_followup(t
     assert "profile/resume_parsing" in first.used_skill_refs
     assert "memory/context_compaction" in first.used_skill_refs
 
-    second = run_career_graph(thread_id, "请做 match 分析", repo)
+    second = run_career_graph(thread_id, "请分析 Agent 开发岗位 JD", repo)
+    third = run_career_graph(thread_id, "请做 match 分析", repo)
 
-    second_records = repo.list_by_thread(thread_id)
-    second_kinds = {record["kind"] for record in second_records}
-    second_compaction_run_ids = [
+    third_records = repo.list_by_thread(thread_id)
+    third_kinds = {record["kind"] for record in third_records}
+    third_compaction_run_ids = [
         repo.get(record["id"])["payload"]["source_run_id"]
-        for record in second_records
+        for record in third_records
         if record["kind"] == "compaction_snapshot"
     ]
     assert second.thread_id == thread_id
+    assert third.thread_id == thread_id
     assert second.active_agent == "memory_manager"
-    assert "match" in second_kinds
-    assert second.run_id in second_compaction_run_ids
-    assert len(second_records) > len(first_records)
+    assert third.active_agent == "memory_manager"
+    assert "job_analysis" in third_kinds
+    assert "match" in third_kinds
+    assert second.run_id in third_compaction_run_ids
+    assert third.run_id in third_compaction_run_ids
+    assert len(third_records) > len(first_records)
     assert set(first.artifacts[0]) == {"id", "kind", "source_thread_id", "source_agent"}
-    assert {record["id"] for record in first_records}.issubset({record["id"] for record in second_records})
+    assert {record["id"] for record in first_records}.issubset({record["id"] for record in third_records})
 
 
 def test_graph_get_state_restores_checkpoint_for_same_thread(tmp_path: Path) -> None:
@@ -77,7 +82,11 @@ def test_graph_get_state_restores_checkpoint_for_same_thread(tmp_path: Path) -> 
     config = {"configurable": {"thread_id": "checkpoint-thread"}}
 
     graph.invoke(
-        {"thread_id": "checkpoint-thread", "user_message": "请给我一个 plan"},
+        {
+            "thread_id": "checkpoint-thread",
+            "user_message": "请给我一个 plan",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis", "match"]},
+        },
         config=config,
     )
     first_state = graph.get_state(config)
@@ -135,6 +144,90 @@ def test_direct_graph_invoke_with_explicit_metadata_run_id_preserves_it(tmp_path
     ]
 
     assert [record["payload"]["source_run_id"] for record in compaction_records] == ["run-direct-explicit"]
+
+
+def test_graph_state_records_supervisor_decision_and_business_agent(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "decision-thread"
+
+    state = graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "请做 match 分析",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis"]},
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "match"
+    assert decision["target_agent"] == "match"
+    assert decision["missing_prerequisites"] == []
+    assert state["metadata"]["last_business_agent"] == "match"
+    assert state["metadata"]["current_runtime_node"] == "memory_manager"
+
+
+def test_match_without_prerequisites_is_blocked(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "missing-match-prereqs-thread"
+
+    state = graph.invoke(
+        {"thread_id": thread_id, "user_message": "请做 match 分析"},
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "match"
+    assert decision["target_agent"] == "match"
+    assert decision["missing_prerequisites"] == ["profile", "job_analysis"]
+    assert state["metadata"]["last_business_agent"] is None
+    assert repo.list_by_kind(thread_id=thread_id, kind="match") == []
+
+
+def test_missing_prerequisites_do_not_execute_target_agent(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "missing-report-prereqs-thread"
+
+    state = graph.invoke(
+        {"thread_id": thread_id, "user_message": "请导出 Markdown 报告"},
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "export_report"
+    assert decision["missing_prerequisites"]
+    assert state["metadata"]["last_business_agent"] is None
+    assert repo.list_by_kind(thread_id=thread_id, kind="report") == []
+
+
+def test_supervisor_uses_active_chain_kinds_before_thread_history(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "active-chain-before-history-thread"
+    repo.save(
+        kind="match",
+        artifact_id="old-match",
+        payload={"title": "旧匹配分析"},
+        source_thread_id=thread_id,
+        source_agent="match",
+    )
+
+    state = graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "生成三个月路径规划",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis"]},
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "plan"
+    assert decision["missing_prerequisites"] == ["match"]
+    assert repo.list_by_kind(thread_id=thread_id, kind="plan") == []
 
 
 def test_graph_handles_thread_ids_that_are_not_safe_artifact_ids(tmp_path: Path) -> None:

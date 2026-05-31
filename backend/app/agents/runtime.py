@@ -159,6 +159,8 @@ def run_business_agent(
     )
     state.messages.append({"role": "assistant", "content": f"{title}: saved {artifact_id}."})
     state.active_agent = agent_id
+    state.last_business_agent = agent_id
+    state.metadata["last_business_agent"] = agent_id
     state.next_agent = runtime.handoff_to("memory_manager")
     state.warnings = _append_unique(
         state.warnings,

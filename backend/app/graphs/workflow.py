@@ -18,7 +18,7 @@ from app.agents.supervisor import supervisor_node
 from app.agents.training import training_node
 from app.graphs.checkpoints import create_checkpointer
 from app.repositories.interfaces import ArtifactRepository
-from app.schemas.runs import AgentTraceItem, RunResponse
+from app.schemas.runs import AgentTraceItem, RunResponse, SupervisorDecision
 
 
 class GraphState(TypedDict, total=False):
@@ -33,6 +33,9 @@ class GraphState(TypedDict, total=False):
     pending_question: str | None
     compaction_snapshot_id: str | None
     next_agent: str | None
+    supervisor_decision: dict[str, Any] | None
+    last_business_agent: str | None
+    current_runtime_node: str | None
     warnings: list[str]
     metadata: dict[str, Any]
 
@@ -88,6 +91,9 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
     )
     artifacts = artifact_repo.list_by_thread(thread_id)
     snapshots = state.get("agent_snapshots", {})
+    metadata = state.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
     trace = [
         AgentTraceItem(
             agent_id=agent_id,
@@ -101,6 +107,12 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         run_id=run_id,
         thread_id=thread_id,
         active_agent=state.get("active_agent", "supervisor"),
+        last_business_agent=metadata.get("last_business_agent"),
+        current_runtime_node=metadata.get("current_runtime_node"),
+        supervisor_decision=_supervisor_decision(metadata),
+        blocking_reason=state.get("pending_question"),
+        missing_artifacts=_missing_artifacts(metadata),
+        missing_capabilities=_missing_capabilities(metadata),
         agent_trace_summary=trace,
         used_skill_refs=state.get("loaded_skill_refs", []),
         artifacts=artifacts,
@@ -132,6 +144,36 @@ def _route_from_supervisor(state: GraphState) -> str:
 
 
 def _next_actions(state: dict[str, Any]) -> list[str]:
+    metadata = state.get("metadata", {})
+    if isinstance(metadata, dict):
+        decision = metadata.get("supervisor_decision")
+        if isinstance(decision, dict):
+            next_actions = decision.get("next_actions")
+            if isinstance(next_actions, list):
+                return [str(action) for action in next_actions]
     if state.get("active_agent") == "memory_manager":
         return ["Review saved artifacts", "Send a follow-up message to continue the workflow"]
     return ["Continue the career workflow"]
+
+
+def _supervisor_decision(metadata: dict[str, Any]) -> SupervisorDecision | None:
+    decision = metadata.get("supervisor_decision")
+    if not isinstance(decision, dict):
+        return None
+    return SupervisorDecision.model_validate(decision)
+
+
+def _missing_artifacts(metadata: dict[str, Any]) -> list[str]:
+    decision = metadata.get("supervisor_decision")
+    if not isinstance(decision, dict):
+        return []
+    missing = decision.get("missing_prerequisites")
+    return [str(item) for item in missing] if isinstance(missing, list) else []
+
+
+def _missing_capabilities(metadata: dict[str, Any]) -> list[str]:
+    decision = metadata.get("supervisor_decision")
+    if not isinstance(decision, dict):
+        return []
+    missing = decision.get("missing_capabilities")
+    return [str(item) for item in missing] if isinstance(missing, list) else []

@@ -1,3 +1,4 @@
+from app.agents.supervisor import decide_user_message
 from app.schemas.memory import CompactionSnapshot, MemoryItem, MemoryScope, MemoryStatus
 from app.schemas.runs import (
     ActiveArtifactFacts,
@@ -117,6 +118,81 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
 def test_supervisor_decision_requires_route_target_and_user_reason() -> None:
     assert SupervisorDecision.model_fields["target_agent"].is_required()
     assert SupervisorDecision.model_fields["user_facing_reason"].is_required()
+
+
+def test_supervisor_decision_maps_training_submission_to_training_agent() -> None:
+    decision = decide_user_message(
+        "我的训练答案：我会设计 FastAPI + LangGraph demo。",
+        {"profile", "job_analysis", "match", "plan", "training_result"},
+    )
+
+    assert decision.intent == SupervisorIntent.SUBMIT_TRAINING
+    assert decision.target_agent == "training"
+    assert decision.required_input_artifact_kinds == ["match", "plan"]
+    assert decision.expected_output_artifact_kinds == ["training_result"]
+    assert decision.missing_prerequisites == []
+    assert "训练" in decision.user_facing_reason
+
+
+def test_supervisor_decision_reports_missing_prerequisites_for_report() -> None:
+    decision = decide_user_message(
+        "请导出报告",
+        {"profile", "job_analysis", "match", "plan"},
+    )
+
+    assert decision.intent == SupervisorIntent.EXPORT_REPORT
+    assert decision.target_agent == "report"
+    assert decision.missing_prerequisites == ["training_result", "interview_summary"]
+    assert decision.missing_capabilities == []
+    assert "训练" in decision.next_actions[0]
+
+
+def test_supervisor_blocks_interview_until_training_is_scored() -> None:
+    decision = decide_user_message(
+        "开始模拟面试",
+        {"profile", "job_analysis", "match", "plan", "training_result"},
+        active_facts=ActiveArtifactFacts(
+            training_submitted=False,
+            training_scored=False,
+        ),
+    )
+
+    assert decision.intent == SupervisorIntent.START_INTERVIEW
+    assert decision.missing_prerequisites == []
+    assert decision.required_capabilities == ["training_scored"]
+    assert decision.missing_capabilities == ["training_scored"]
+    assert "训练答案" in decision.next_actions[0]
+
+
+def test_supervisor_blocks_report_until_three_interview_turns_are_complete() -> None:
+    decision = decide_user_message(
+        "请导出报告",
+        {"profile", "job_analysis", "match", "plan", "training_result", "interview_summary"},
+        active_facts=ActiveArtifactFacts(
+            training_submitted=True,
+            training_scored=True,
+            has_interview_summary=True,
+            interview_turn_count=2,
+            interview_completed=False,
+        ),
+    )
+
+    assert decision.intent == SupervisorIntent.EXPORT_REPORT
+    assert decision.missing_prerequisites == []
+    assert decision.required_capabilities == ["training_scored", "interview_completed"]
+    assert decision.missing_capabilities == ["interview_completed"]
+    assert "三轮模拟面试" in decision.next_actions[0]
+
+
+def test_supervisor_decision_prefers_profile_for_first_demo_prompt() -> None:
+    decision = decide_user_message(
+        "我会 Python FastAPI，想匹配 Agent 开发岗位",
+        set(),
+    )
+
+    assert decision.intent == SupervisorIntent.BUILD_PROFILE
+    assert decision.target_agent == "profile"
+    assert decision.missing_prerequisites == []
 
 
 def test_run_response_accepts_raw_compaction_snapshot_payload() -> None:

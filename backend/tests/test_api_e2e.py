@@ -92,20 +92,34 @@ def test_runs_endpoint_reuses_same_thread_checkpoint_between_requests(
     )
     second = client.post(
         "/api/runs",
+        json={"thread_id": thread_id, "message": "请分析 Agent 开发岗位 JD"},
+    )
+    third = client.post(
+        "/api/runs",
+        json={"thread_id": thread_id, "message": "请做 match 分析"},
+    )
+    fourth = client.post(
+        "/api/runs",
         json={"thread_id": thread_id, "message": "生成三个月路径规划"},
     )
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert third.status_code == 200
+    assert fourth.status_code == 200
     graph = get_runtime_graph(JsonArtifactRepository(tmp_path))
     snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
     messages = snapshot.values["messages"]
     assert [message["content"] for message in messages if message["role"] == "user"] == [
         "请从我的 resume 建立 profile",
+        "请分析 Agent 开发岗位 JD",
+        "请做 match 分析",
         "生成三个月路径规划",
     ]
     assert len(snapshot.values["artifact_ids"]) >= len(first.json()["artifacts"])
-    assert {"profile", "plan"} <= {artifact["kind"] for artifact in second.json()["artifacts"]}
+    assert {"profile", "job_analysis", "match", "plan"} <= {
+        artifact["kind"] for artifact in fourth.json()["artifacts"]
+    }
 
 
 def test_runs_endpoint_rejects_unsafe_thread_id() -> None:

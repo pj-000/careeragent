@@ -42,6 +42,8 @@ def memory_manager_node(state: dict[str, Any], artifact_repo: ArtifactRepository
         {"role": "assistant", "content": f"Memory compaction snapshot saved as {artifact_id}."}
     )
     career_state.active_agent = "memory_manager"
+    career_state.current_runtime_node = "memory_manager"
+    career_state.metadata["current_runtime_node"] = "memory_manager"
     career_state.next_agent = None
     return career_state.model_dump()
 
