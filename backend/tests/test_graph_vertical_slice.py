@@ -174,3 +174,20 @@ def test_agent_runtime_context_enforces_permissions_and_thread_scoped_artifact_r
 
     with pytest.raises(PermissionDenied, match="tool"):
         profile_runtime._require_tool("external_search")
+
+
+def test_training_agent_cannot_write_match_artifact(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    training_runtime = AgentRuntimeContext(
+        thread_id="thread-kind-gate",
+        agent_id="training",
+        artifact_repo=repo,
+        manifest=AGENT_MANIFESTS["training"],
+    )
+
+    with pytest.raises(PermissionDenied, match="artifact kind 'match'"):
+        training_runtime.save_artifact(
+            kind="match",
+            artifact_id="match-from-training",
+            payload={"content": {"score": 74}},
+        )

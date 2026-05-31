@@ -35,6 +35,7 @@ class AgentRuntimeContext:
         parent_artifact_ids: list[str] | None = None,
     ) -> str:
         self._require_tool("artifact_write")
+        self._require_writable_artifact_kind(kind)
         self.artifact_repo.save(
             kind=kind,
             artifact_id=artifact_id,
@@ -48,8 +49,22 @@ class AgentRuntimeContext:
     def list_artifacts(self, kind: str | None = None) -> list[dict[str, str]]:
         self._require_tool("artifact_read")
         if kind is None:
-            return self.artifact_repo.list_by_thread(self.thread_id)
+            artifacts = self.artifact_repo.list_by_thread(self.thread_id)
+            return [
+                artifact
+                for artifact in artifacts
+                if artifact.get("kind") in set(self.manifest.readable_artifact_kinds)
+            ]
+        self._require_readable_artifact_kind(kind)
         return self.artifact_repo.list_by_kind(self.thread_id, kind)
+
+    def get_artifact(self, artifact_id: str) -> dict[str, Any]:
+        self._require_tool("artifact_read")
+        artifact = self.artifact_repo.get(artifact_id)
+        if artifact.get("source_thread_id") != self.thread_id:
+            raise PermissionDenied(f"{self.agent_id} cannot read artifact outside thread {self.thread_id!r}")
+        self._require_readable_artifact_kind(str(artifact.get("kind", "")))
+        return artifact
 
     def read_memory(self, scope: str) -> list[dict[str, Any]]:
         self._require_tool("memory_read")
@@ -72,6 +87,14 @@ class AgentRuntimeContext:
     def _require_tool(self, tool_name: str) -> None:
         if tool_name not in self.manifest.allowed_tools:
             raise PermissionDenied(f"{self.agent_id} is not allowed to use tool {tool_name}")
+
+    def _require_readable_artifact_kind(self, kind: str) -> None:
+        if kind not in self.manifest.readable_artifact_kinds:
+            raise PermissionDenied(f"{self.agent_id} cannot read artifact kind {kind!r}")
+
+    def _require_writable_artifact_kind(self, kind: str) -> None:
+        if kind not in self.manifest.writable_artifact_kinds:
+            raise PermissionDenied(f"{self.agent_id} cannot write artifact kind {kind!r}")
 
 
 def coerce_state(raw_state: dict[str, Any]) -> CareerAgentState:

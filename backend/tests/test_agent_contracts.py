@@ -19,6 +19,18 @@ EXPECTED_SKILL_REFS = {
     "report": ["report/markdown_report"],
 }
 
+EXPECTED_WRITABLE_ARTIFACT_KINDS = {
+    "supervisor": [],
+    "memory_manager": ["compaction_snapshot"],
+    "profile": ["profile"],
+    "job": ["job_analysis"],
+    "match": ["match"],
+    "planning": ["plan"],
+    "training": ["training_result"],
+    "interview": ["interview_summary"],
+    "report": ["report"],
+}
+
 
 def test_agent_manifests_include_expected_agents_with_required_contract_fields() -> None:
     assert set(AGENT_MANIFESTS) == {
@@ -42,6 +54,8 @@ def test_agent_manifests_include_expected_agents_with_required_contract_fields()
         assert isinstance(manifest.allowed_tools, list)
         assert manifest.skill_policy.default_skill_ids == EXPECTED_SKILL_REFS[agent_id]
         assert isinstance(manifest.handoff_policy.allowed_targets, list)
+        assert isinstance(manifest.readable_artifact_kinds, list)
+        assert manifest.writable_artifact_kinds == EXPECTED_WRITABLE_ARTIFACT_KINDS[agent_id]
         assert isinstance(manifest.readable_memory_scopes, list)
         assert isinstance(manifest.writable_memory_scopes, list)
 
@@ -50,6 +64,10 @@ def test_manifest_permissions_align_with_runtime_gate_expectations() -> None:
     for agent_id, manifest in AGENT_MANIFESTS.items():
         if manifest.writable_memory_scopes:
             assert "memory_write" in manifest.allowed_tools, agent_id
+        if manifest.writable_artifact_kinds:
+            assert "artifact_write" in manifest.allowed_tools, agent_id
+        if manifest.readable_artifact_kinds:
+            assert "artifact_read" in manifest.allowed_tools, agent_id
 
     memory_manager = AGENT_MANIFESTS["memory_manager"]
     assert "artifact_write" in memory_manager.allowed_tools

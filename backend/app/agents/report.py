@@ -11,7 +11,7 @@ def report_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> dic
     career_state = coerce_state(state)
     runtime = make_runtime(career_state, "report", artifact_repo)
     skill_refs = AGENT_MANIFESTS["report"].skill_policy.default_skill_ids
-    artifacts = [artifact_repo.get(artifact["id"]) for artifact in artifact_repo.list_by_thread(career_state.thread_id)]
+    artifacts = [runtime.get_artifact(artifact["id"]) for artifact in runtime.list_artifacts()]
     try:
         content = build_markdown_report(career_state.thread_id, artifacts)
         parent_artifact_ids = required_parent_artifact_ids(career_state.thread_id, artifacts)

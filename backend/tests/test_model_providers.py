@@ -140,9 +140,24 @@ def test_deepseek_payload_maps_reasoning_options_inside_adapter_and_pops_provide
     assert payload["messages"] == [{"role": "user", "content": "hello"}]
     assert payload["temperature"] == 0.1
     assert payload["reasoning_effort"] == "max"
-    assert payload["enable_reasoning"] is True
+    assert payload["thinking"] == {"type": "enabled"}
+    assert "enable_reasoning" not in payload
     assert "deepseek_effort" not in payload
     assert "thinking_mode" not in payload
+
+
+def test_deepseek_payload_disables_thinking_with_off_mode() -> None:
+    request = ModelRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        thinking_mode="off",
+        reasoning_effort="medium",
+    )
+
+    payload = DeepSeekProvider(api_key="test-key", model="deepseek-test").build_payload(request)
+
+    assert payload["thinking"] == {"type": "disabled"}
+    assert "enable_reasoning" not in payload
+    assert "reasoning_effort" not in payload
 
 
 def test_deepseek_provider_reads_model_and_base_url_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:

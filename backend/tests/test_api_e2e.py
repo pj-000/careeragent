@@ -13,6 +13,7 @@ def complete_demo_messages(marker: str | None = None) -> list[str]:
     return [
         first_message,
         "请分析目标岗位 JD：Agent 开发工程师，需要 LangGraph、FastAPI、RAG 和测试能力",
+        "请做 match 分析",
         "生成三个月路径规划",
         "根据能力差距给我一个训练任务",
         "我的训练答案：我会设计一个简历解析 Agent，使用 FastAPI 暴露接口，用 LangGraph 编排画像抽取和评分节点。",

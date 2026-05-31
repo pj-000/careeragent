@@ -12,6 +12,15 @@ REQUIRED_REPORT_KINDS = [
     "interview_summary",
 ]
 
+EXPECTED_REPORT_PRODUCERS = {
+    "profile": "profile",
+    "job_analysis": "job",
+    "match": "match",
+    "plan": "planning",
+    "training_result": "training",
+    "interview_summary": "interview",
+}
+
 
 class MissingArtifactError(ValueError):
     pass
@@ -86,6 +95,12 @@ def _latest_required_artifacts(
                 str(artifact.get("id", "")),
             ),
         )[-1]
+        expected_producer = EXPECTED_REPORT_PRODUCERS[kind]
+        actual_producer = by_kind[kind].get("source_agent")
+        if actual_producer != expected_producer:
+            raise MissingArtifactError(
+                f"Invalid producer for {kind}: expected {expected_producer}, got {actual_producer}"
+            )
     return by_kind
 
 

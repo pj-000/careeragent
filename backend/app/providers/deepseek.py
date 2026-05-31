@@ -27,15 +27,26 @@ class DeepSeekProvider(ChatCompletionProvider):
         payload = super().build_payload(request)
         provider_options = dict(request.provider_options)
         deepseek_effort = provider_options.pop("deepseek_effort", None)
+        provider_options.pop("enable_reasoning", None)
+        provider_options.pop("thinking", None)
+        provider_options.pop("reasoning_effort", None)
 
         for key in request.provider_options:
             payload.pop(key, None)
         payload.update(provider_options)
 
         if request.thinking_mode == "off":
-            payload["enable_reasoning"] = False
+            payload["thinking"] = {"type": "disabled"}
         else:
-            payload["enable_reasoning"] = True
-            payload["reasoning_effort"] = deepseek_effort or request.reasoning_effort
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = _normalize_deepseek_effort(
+                str(deepseek_effort or request.reasoning_effort)
+            )
 
         return payload
+
+
+def _normalize_deepseek_effort(effort: str) -> str:
+    if effort in {"high", "max"}:
+        return effort
+    return "high"
