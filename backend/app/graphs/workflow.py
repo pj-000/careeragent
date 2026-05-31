@@ -82,7 +82,7 @@ def run_career_graph(thread_id: str, message: str, artifact_repo: ArtifactReposi
         {
             "thread_id": thread_id,
             "user_message": message,
-            "metadata": {"run_id": run_id, "_explicit_run_id": True},
+            "metadata": {"run_id": run_id},
         },
         config=config,
     )

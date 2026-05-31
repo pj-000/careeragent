@@ -55,8 +55,11 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
 
 
 def _ensure_current_run_id(career_state: CareerAgentState) -> None:
-    explicit_run_id = career_state.metadata.pop("_explicit_run_id", False)
     run_id = career_state.metadata.get("run_id")
-    if explicit_run_id and isinstance(run_id, str) and run_id.strip():
+    previous_run_id = career_state.metadata.get("_last_compaction_run_id")
+    if isinstance(run_id, str) and run_id.strip() and run_id != previous_run_id:
+        career_state.metadata["_last_compaction_run_id"] = run_id
         return
-    career_state.metadata["run_id"] = f"run-{uuid4().hex[:12]}"
+    generated_run_id = f"run-{uuid4().hex[:12]}"
+    career_state.metadata["run_id"] = generated_run_id
+    career_state.metadata["_last_compaction_run_id"] = generated_run_id

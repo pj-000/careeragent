@@ -116,6 +116,27 @@ def test_direct_graph_invoke_without_run_id_uses_fresh_compaction_run_id_each_ti
     assert "run-unknown" not in source_run_ids
 
 
+def test_direct_graph_invoke_with_explicit_metadata_run_id_preserves_it(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    thread_id = "direct-explicit-run-id-thread"
+
+    graph.invoke(
+        {
+            "thread_id": thread_id,
+            "user_message": "请从我的 resume 建立 profile",
+            "metadata": {"run_id": "run-direct-explicit"},
+        },
+        config={"configurable": {"thread_id": thread_id}},
+    )
+
+    compaction_records = [
+        repo.get(artifact["id"]) for artifact in repo.list_by_kind(thread_id=thread_id, kind="compaction_snapshot")
+    ]
+
+    assert [record["payload"]["source_run_id"] for record in compaction_records] == ["run-direct-explicit"]
+
+
 def test_graph_handles_thread_ids_that_are_not_safe_artifact_ids(tmp_path: Path) -> None:
     repo = JsonArtifactRepository(tmp_path)
 
