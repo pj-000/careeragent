@@ -1,4 +1,4 @@
-# CareerAgent Chat Workbench v3 Design
+# CareerAgent Chat Workbench v3.1 Design
 
 ## Purpose
 
@@ -30,8 +30,10 @@ The system routes those messages through Supervisor and the specialist agents. T
 - No teacher dashboard, class management, or student list.
 - No public cloud deployment requirement in this phase.
 - No database migration; JSON remains the persistence layer.
+- No PDF, Word, or OCR resume parsing in this phase. v3.1 supports pasted resume text and pasted JD text only.
 - No requirement to implement streaming tokens unless it naturally fits after the core workbench is stable.
 - No hidden reasoning display. The UI can show summaries, trace, selected skills, artifacts, and compaction summaries, but not private chain-of-thought.
+- No mobile-first layout requirement. This phase is desktop-first for local demo and review.
 
 ## User Experience
 
@@ -54,9 +56,34 @@ The first screen contains:
 
 The workbench starts with sample prompts and optional sample student/job presets. After the first user message, the conversation and workspace are driven by `/api/runs`.
 
+## Active Workspace Context
+
+Free-form chat can create multiple job, match, plan, training, interview, and report artifacts inside one thread. The workbench must not simply render the latest artifact by kind. It must render the active artifact chain selected by an explicit workspace context.
+
+Minimum schema:
+
+```text
+WorkspaceContext {
+  thread_id: string
+  active_goal: string
+  active_profile_id?: string
+  active_job_analysis_id?: string
+  active_match_id?: string
+  active_plan_id?: string
+  active_training_result_id?: string
+  active_interview_summary_id?: string
+  active_report_id?: string
+  active_compaction_snapshot_id?: string
+  updated_by_run_id: string
+  updated_at: string
+}
+```
+
+The Supervisor and business agents update this context after each run. If the student switches target roles, the system can start a new active chain without deleting historical artifacts. The report builder reads the active chain, not the latest artifact of each kind.
+
 ## Main Workspace
 
-The workspace renders the latest artifact of each kind for the active thread:
+The workspace renders the artifacts referenced by the active workspace context:
 
 - `profile`: student summary, skills, experience signals, evidence notes.
 - `job_analysis`: target role, responsibilities, required skills, risks.
@@ -88,6 +115,25 @@ The conversation panel is the primary input surface. It should support:
 
 The assistant response should be a user-facing summary derived from the latest run. It can reference created artifacts and next actions. It should not simply expose raw JSON.
 
+Messages are durable JSON records, not frontend-only state:
+
+```text
+ConversationMessage {
+  id: string
+  thread_id: string
+  role: "user" | "assistant" | "system"
+  content: string
+  run_id?: string
+  created_at: string
+  artifact_refs: string[]
+  last_business_agent?: string
+  current_runtime_node?: string
+  warnings?: string[]
+}
+```
+
+`POST /api/runs` saves the user message, executes the LangGraph run, updates the active workspace context, then saves an assistant message tied to the run and created artifacts. `GET /api/threads/{thread_id}/messages` restores the visible conversation after refresh.
+
 ## Runtime Visibility
 
 For project demonstration, the UI should make the runtime auditable without overwhelming the student view.
@@ -112,6 +158,11 @@ The runtime panel should show:
 
 This panel is a demo and review aid. It should be visually secondary to the student workbench.
 
+Runtime visibility has two modes:
+
+- Student mode: default mode. Hide the runtime drawer and show only simple progress, next actions, and recoverable errors.
+- Demo mode: enabled by a local toggle or `?demo=1`. Show agent trace, artifact chain, parent relationships, skill refs, memory updates, and compaction snapshot summary.
+
 ## Backend API Direction
 
 Keep `POST /api/runs` as the single runtime entry for messages that can trigger agent work.
@@ -128,17 +179,44 @@ POST /api/runs
   output:
     run_id
     thread_id
+    run_status
     active_agent
     last_business_agent
     current_runtime_node
     assistant_message
+    supervisor_decision
     agent_trace_summary
     used_skill_refs
     artifacts
     artifact_chain
+    workspace_delta
     compaction_snapshot
+    blocking_reason
+    missing_artifacts
+    retryable
     next_actions
     warnings
+```
+
+Run status values:
+
+```text
+run_status:
+  | "completed"
+  | "needs_input"
+  | "blocked_by_prerequisite"
+  | "provider_error"
+  | "permission_denied"
+  | "failed"
+```
+
+`assistant_message` uses the durable `ConversationMessage` shape. `workspace_delta` describes created artifacts and the updated active workspace context:
+
+```text
+workspace_delta {
+  created_artifacts: ArtifactRef[]
+  updated_context: WorkspaceContext
+}
 ```
 
 Add read endpoints only for UI convenience:
@@ -149,6 +227,53 @@ Add read endpoints only for UI convenience:
 - `GET /api/reports/{thread_id}/markdown`
 
 The frontend should not call individual agents directly.
+
+`GET /api/threads/{thread_id}/workspace` returns active-context artifacts, not latest-by-kind artifacts:
+
+```text
+{
+  thread_id: string
+  active_context: WorkspaceContext
+  workspace_artifacts: {
+    profile?: Artifact
+    job_analysis?: Artifact
+    match?: Artifact
+    plan?: Artifact
+    training_result?: Artifact
+    interview_summary?: Artifact
+    report?: Artifact
+    compaction_snapshot?: Artifact
+  }
+  artifact_chain: ArtifactRef[]
+}
+```
+
+## Supervisor Decision Contract
+
+The natural-language entrypoint depends on Supervisor producing a stable routing contract:
+
+```text
+SupervisorDecision {
+  intent:
+    | "build_profile"
+    | "analyze_job"
+    | "match"
+    | "plan"
+    | "create_training"
+    | "submit_training"
+    | "start_interview"
+    | "answer_interview"
+    | "export_report"
+    | "clarify"
+  target_agent: string
+  required_artifact_kinds: string[]
+  missing_prerequisites: string[]
+  user_facing_reason: string
+  next_actions: string[]
+}
+```
+
+The UI uses this contract to explain why a run was routed, which agent acted, which prerequisites are missing, and what the student can do next.
 
 ## Memory And Compaction
 
@@ -161,7 +286,55 @@ Long-term memory should become a minimal JSON repository:
 - Read only scopes allowed by the active agent manifest.
 - Keep memory separate from skill content.
 
+Minimum memory schema:
+
+```text
+MemoryItem {
+  id: string
+  thread_id: string
+  scope: "profile" | "preference" | "goal" | "skill" | "evidence"
+  fact: string
+  source_artifact_id?: string
+  source_message_id?: string
+  confidence: number
+  status: "confirmed" | "pending_confirmation" | "rejected"
+  created_at: string
+  updated_at: string
+}
+```
+
+Pending memory candidates appear in student mode as short confirmation prompts, such as "你似乎更倾向 AI Agent 开发岗位". The student can confirm or ignore them. Minimal APIs:
+
+- `POST /api/threads/{thread_id}/memory/{memory_id}/confirm`
+- `POST /api/threads/{thread_id}/memory/{memory_id}/reject`
+
 Compaction should follow the existing Codex/Claude Code style: preserve recoverable task state, not a generic chat summary.
+
+Minimum compaction snapshot schema:
+
+```text
+CompactionSnapshot {
+  id: string
+  thread_id: string
+  source_run_id: string
+  current_goal: string
+  confirmed_facts: string[]
+  decisions_made: string[]
+  active_artifact_refs: string[]
+  next_actions: string[]
+  dropped_context_summary: string
+  created_at: string
+}
+```
+
+Trigger compaction when any of these conditions is true:
+
+- Every six conversation turns by default.
+- Before report generation.
+- The context budget exceeds a configured threshold.
+- The student switches target role or active goal.
+
+Tests must prove snapshots do not contain `hidden_reasoning`, `chain_of_thought`, or raw provider `reasoning_content`.
 
 The UI should show compaction as:
 
@@ -180,6 +353,20 @@ The current implementation stores only skill refs in graph state. v3 should make
 - The loader can choose full body, summary, or skip based on budget.
 - Tests should prove different intents or budgets produce different loaded skill sets or detail levels.
 
+Runtime state stores bounded skill refs:
+
+```text
+SkillRuntimeRef {
+  skill_id: string
+  version: string
+  section_ids: string[]
+  detail_level: "summary" | "full" | "skipped"
+  summary_digest: string
+}
+```
+
+`summary_digest` is a short digest capped at 240 characters. It must not become a hidden copy of the skill body.
+
 ## Error Handling
 
 The UI should handle:
@@ -189,16 +376,23 @@ The UI should handle:
 - Provider errors: show retry and allow fallback to mock provider for demo.
 - Long context: show that compaction occurred and continue the thread.
 - Permission failures: show a demo-safe error and log the denied action in runtime warnings.
+- Markdown preview sanitizes user-provided content, disables raw HTML, and avoids rendering untrusted markup directly.
 
 ## Testing
 
 Backend tests:
 
 - `/api/runs` returns `last_business_agent`, `current_runtime_node`, assistant message, artifact chain, and compaction summary.
-- Workspace endpoint returns latest artifacts by kind for one thread only.
+- `/api/runs` persists user and assistant `ConversationMessage` records with run ids and artifact refs.
+- `/api/runs` returns `run_status`, `SupervisorDecision`, and `workspace_delta`.
+- Workspace endpoint returns active-context artifacts for one thread only.
+- Report export reads the active artifact chain and does not mix artifacts from different goals or jobs.
 - Runtime still rejects unauthorized artifact read/write, memory access, and handoff.
 - Memory repository persists confirmed facts and filters by thread/scope.
+- Memory confirmation and rejection endpoints update memory item status.
+- Compaction snapshot tests prove no hidden reasoning, chain-of-thought, or raw reasoning content is stored.
 - Skill loader selects by agent, intent, and budget.
+- Graph state stores bounded `SkillRuntimeRef` records, not full skill bodies.
 
 Frontend tests or build checks:
 
@@ -206,6 +400,7 @@ Frontend tests or build checks:
 - Sending a message updates conversation and workspace artifacts.
 - Custom job text flows into job analysis and match.
 - Training and interview gates are visible before report export.
+- Student mode hides runtime internals; demo mode exposes trace, artifact chain, memory, and compaction.
 - Markdown export still works after a full thread.
 
 Manual browser smoke:
@@ -215,12 +410,16 @@ Manual browser smoke:
 - Send a natural first message.
 - Complete profile, job, match, plan, training submission, three interview turns, and report export.
 - Confirm the runtime panel shows business agent, memory manager final node, artifact chain, and compaction snapshot.
+- Switch or mention a second target role, then return to the first active chain and confirm the workspace does not mix artifacts across goals.
 
 ## Acceptance Criteria
 
 - The user can drive the app from free-form chat, not only by fixed demo buttons.
 - The structured workspace updates from persisted artifacts.
+- The workspace and report use active workspace context, not latest artifacts by kind.
+- Conversation messages survive refresh and stay linked to run ids and artifact refs.
 - Demo reviewers can see the multi-agent chain, skills, memory, and artifacts.
+- Runtime status distinguishes completed, needs-input, prerequisite-blocked, provider-error, permission-denied, and failed runs.
 - Existing v2 strict runtime gates remain intact.
 - Full backend pytest and frontend build pass.
 - Browser smoke proves the chat workbench flow is usable.
