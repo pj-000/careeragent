@@ -109,7 +109,8 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
         supervisor_decision=SupervisorDecision(
             intent=SupervisorIntent.MATCH,
             target_agent="match",
-            required_artifact_kinds=["profile", "job_analysis"],
+            required_input_artifact_kinds=["profile", "job_analysis"],
+            expected_output_artifact_kinds=["match"],
             missing_prerequisites=[],
             user_facing_reason="需要根据画像和岗位做匹配。",
             next_actions=["查看能力差距", "生成三个月计划"],
@@ -131,6 +132,16 @@ def test_run_response_exposes_v31_chat_workbench_contract() -> None:
             ArtifactChainItem(id="job-1", kind="job_analysis", source_thread_id="thread-1", source_agent="job"),
             ArtifactChainItem(id="match-1", kind="match", source_thread_id="thread-1", source_agent="match"),
         ],
+        used_skill_runtime_refs=[
+            SkillRuntimeRef(
+                skill_id="match/gap_diagnosis",
+                version="1",
+                section_ids=["rubric", "gaps"],
+                detail_level="summary",
+                summary_digest="识别岗位要求和学生画像之间的关键差距。",
+            )
+        ],
+        memory_updates=[],
     )
 
     payload = response.model_dump(mode="json")
@@ -229,6 +240,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.memory import MemoryItem, MemoryScope, MemoryStatus
+from app.schemas.skills import SkillRuntimeRef
+
 
 class RunStatus(str, Enum):
     COMPLETED = "completed"
@@ -298,7 +312,8 @@ class ConversationMessage(BaseModel):
 class SupervisorDecision(BaseModel):
     intent: SupervisorIntent
     target_agent: str
-    required_artifact_kinds: list[str] = Field(default_factory=list)
+    required_input_artifact_kinds: list[str] = Field(default_factory=list)
+    expected_output_artifact_kinds: list[str] = Field(default_factory=list)
     missing_prerequisites: list[str] = Field(default_factory=list)
     user_facing_reason: str
     next_actions: list[str] = Field(default_factory=list)
@@ -346,10 +361,12 @@ class RunResponse(BaseModel):
     supervisor_decision: SupervisorDecision | None = None
     agent_trace_summary: list[AgentTraceItem] = Field(default_factory=list)
     used_skill_refs: list[str] = Field(default_factory=list)
+    used_skill_runtime_refs: list[SkillRuntimeRef] = Field(default_factory=list)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
     artifact_chain: list[ArtifactChainItem] = Field(default_factory=list)
     workspace_delta: WorkspaceDelta | None = None
     compaction_snapshot: dict[str, Any] | None = None
+    memory_updates: list[MemoryItem] = Field(default_factory=list)
     blocking_reason: str | None = None
     missing_artifacts: list[str] = Field(default_factory=list)
     retryable: bool = False
@@ -616,6 +633,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -694,7 +712,7 @@ class JsonMemoryRepository:
 
     def set_status(self, thread_id: str, memory_id: str, status: MemoryStatus) -> MemoryItem:
         item = self.get(thread_id, memory_id)
-        updated = item.model_copy(update={"status": status})
+        updated = item.model_copy(update={"status": status, "updated_at": datetime.now(timezone.utc)})
         return self.save(updated)
 
 
@@ -781,7 +799,8 @@ def test_supervisor_decision_maps_training_submission_to_training_agent() -> Non
 
     assert decision.intent == SupervisorIntent.SUBMIT_TRAINING
     assert decision.target_agent == "training"
-    assert decision.required_artifact_kinds == ["training_result"]
+    assert decision.required_input_artifact_kinds == ["match", "plan"]
+    assert decision.expected_output_artifact_kinds == ["training_result"]
     assert decision.missing_prerequisites == []
     assert "训练" in decision.user_facing_reason
 
@@ -796,6 +815,17 @@ def test_supervisor_decision_reports_missing_prerequisites_for_report() -> None:
     assert decision.target_agent == "report"
     assert decision.missing_prerequisites == ["training_result", "interview_summary"]
     assert "训练" in decision.next_actions[0]
+
+
+def test_supervisor_decision_prefers_profile_for_first_demo_prompt() -> None:
+    decision = decide_user_message(
+        "我会 Python FastAPI，想匹配 Agent 开发岗位",
+        available_artifact_kinds=set(),
+    )
+
+    assert decision.intent == SupervisorIntent.BUILD_PROFILE
+    assert decision.target_agent == "profile"
+    assert decision.missing_prerequisites == []
 ```
 
 Append to `backend/tests/test_graph_vertical_slice.py`:
@@ -816,6 +846,39 @@ def test_graph_state_records_supervisor_decision_and_business_agent(tmp_path: Pa
     assert decision["target_agent"] == "match"
     assert state["metadata"]["last_business_agent"] == "match"
     assert state["metadata"]["current_runtime_node"] == "memory_manager"
+
+
+def test_missing_prerequisites_do_not_execute_target_agent(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    graph = build_graph(artifact_repo=repo)
+    state = graph.invoke(
+        {"thread_id": "blocked-report-thread", "user_message": "请导出 Markdown 报告"},
+        config={"configurable": {"thread_id": "blocked-report-thread"}},
+    )
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "export_report"
+    assert decision["missing_prerequisites"]
+    assert state["metadata"]["last_business_agent"] is None
+    assert repo.list_by_kind("blocked-report-thread", "report") == []
+
+
+def test_supervisor_uses_active_chain_kinds_before_thread_history(tmp_path: Path) -> None:
+    repo = JsonArtifactRepository(tmp_path)
+    repo.save("match", "old-match", {"content": {}}, "active-kind-thread", "match")
+    graph = build_graph(artifact_repo=repo)
+    state = graph.invoke(
+        {
+            "thread_id": "active-kind-thread",
+            "user_message": "生成三个月路径规划",
+            "metadata": {"active_artifact_kinds": ["profile", "job_analysis"]},
+        },
+        config={"configurable": {"thread_id": "active-kind-thread"}},
+    )
+
+    decision = state["metadata"]["supervisor_decision"]
+    assert decision["intent"] == "plan"
+    assert decision["missing_prerequisites"] == ["match"]
+    assert repo.list_by_kind("active-kind-thread", "plan") == []
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -823,7 +886,7 @@ def test_graph_state_records_supervisor_decision_and_business_agent(tmp_path: Pa
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: FAIL because `decide_user_message` and graph metadata fields do not exist.
@@ -842,10 +905,24 @@ REQUIRED_BY_INTENT = {
     SupervisorIntent.MATCH: ["profile", "job_analysis"],
     SupervisorIntent.PLAN: ["profile", "job_analysis", "match"],
     SupervisorIntent.CREATE_TRAINING: ["match", "plan"],
-    SupervisorIntent.SUBMIT_TRAINING: ["training_result"],
+    SupervisorIntent.SUBMIT_TRAINING: ["match", "plan"],
     SupervisorIntent.START_INTERVIEW: ["profile", "job_analysis", "match", "plan", "training_result"],
-    SupervisorIntent.ANSWER_INTERVIEW: ["interview_summary"],
+    SupervisorIntent.ANSWER_INTERVIEW: ["profile", "job_analysis", "match", "plan", "training_result"],
     SupervisorIntent.EXPORT_REPORT: ["profile", "job_analysis", "match", "plan", "training_result", "interview_summary"],
+    SupervisorIntent.CLARIFY: [],
+}
+
+
+EXPECTED_OUTPUT_BY_INTENT = {
+    SupervisorIntent.BUILD_PROFILE: ["profile"],
+    SupervisorIntent.ANALYZE_JOB: ["job_analysis"],
+    SupervisorIntent.MATCH: ["match"],
+    SupervisorIntent.PLAN: ["plan"],
+    SupervisorIntent.CREATE_TRAINING: ["training_result"],
+    SupervisorIntent.SUBMIT_TRAINING: ["training_result"],
+    SupervisorIntent.START_INTERVIEW: ["interview_summary"],
+    SupervisorIntent.ANSWER_INTERVIEW: ["interview_summary"],
+    SupervisorIntent.EXPORT_REPORT: ["report"],
     SupervisorIntent.CLARIFY: [],
 }
 
@@ -871,7 +948,8 @@ def decide_user_message(message: str, available_artifact_kinds: set[str]) -> Sup
     return SupervisorDecision(
         intent=intent,
         target_agent=TARGET_BY_INTENT[intent],
-        required_artifact_kinds=required,
+        required_input_artifact_kinds=required,
+        expected_output_artifact_kinds=EXPECTED_OUTPUT_BY_INTENT[intent],
         missing_prerequisites=missing,
         user_facing_reason=_reason_for_intent(intent, missing),
         next_actions=_next_actions_for_decision(intent, missing),
@@ -884,6 +962,10 @@ def _detect_intent(message: str) -> SupervisorIntent:
         return SupervisorIntent.ANSWER_INTERVIEW
     if "训练答案" in message:
         return SupervisorIntent.SUBMIT_TRAINING
+    if "我的简历" in message or "简历" in message or "我会" in message or "我有" in message or "resume" in normalized or "profile" in normalized:
+        return SupervisorIntent.BUILD_PROFILE
+    if "岗位" in message or "jd" in normalized or "job" in normalized:
+        return SupervisorIntent.ANALYZE_JOB
     if "训练" in message or "training task" in normalized:
         return SupervisorIntent.CREATE_TRAINING
     if "报告" in message or "report" in normalized:
@@ -894,10 +976,6 @@ def _detect_intent(message: str) -> SupervisorIntent:
         return SupervisorIntent.PLAN
     if "匹配" in message or "match" in normalized:
         return SupervisorIntent.MATCH
-    if "岗位" in message or "jd" in normalized or "job" in normalized:
-        return SupervisorIntent.ANALYZE_JOB
-    if "我会" in message or "我有" in message or "resume" in normalized or "profile" in normalized or "简历" in message:
-        return SupervisorIntent.BUILD_PROFILE
     return SupervisorIntent.MATCH
 
 
@@ -951,7 +1029,12 @@ Modify `supervisor_node()`:
 def supervisor_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> dict[str, Any]:
     career_state = coerce_state(state)
     runtime = make_runtime(career_state, "supervisor", artifact_repo)
-    available_kinds = {artifact["kind"] for artifact in artifact_repo.list_by_thread(career_state.thread_id)}
+    active_kinds = career_state.metadata.get("active_artifact_kinds")
+    available_kinds = (
+        set(active_kinds)
+        if isinstance(active_kinds, list)
+        else {artifact["kind"] for artifact in artifact_repo.list_by_thread(career_state.thread_id)}
+    )
     decision = decide_user_message(career_state.user_message, available_kinds)
     target = decision.target_agent
     career_state.loaded_skill_refs = _append_unique(
@@ -966,8 +1049,15 @@ def supervisor_node(state: dict[str, Any], artifact_repo: ArtifactRepository) ->
         used_skill_refs=list(AGENT_MANIFESTS["supervisor"].skill_policy.default_skill_ids),
     )
     career_state.metadata["supervisor_decision"] = decision.model_dump(mode="json")
-    career_state.metadata["last_business_agent"] = target if target != "memory_manager" else None
     career_state.active_agent = "supervisor"
+    if decision.missing_prerequisites:
+        career_state.pending_question = decision.user_facing_reason
+        career_state.metadata["last_business_agent"] = None
+        career_state.metadata["current_runtime_node"] = "supervisor"
+        career_state.next_agent = runtime.handoff_to("memory_manager")
+        return career_state.model_dump()
+
+    career_state.metadata["last_business_agent"] = target if target != "memory_manager" else None
     career_state.next_agent = runtime.handoff_to(target)
     return career_state.model_dump()
 ```
@@ -1007,7 +1097,7 @@ current_runtime_node: str | None
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent
+cd backend && .venv/bin/python -m pytest -q tests/test_chat_workbench_contracts.py::test_supervisor_decision_maps_training_submission_to_training_agent tests/test_chat_workbench_contracts.py::test_supervisor_decision_reports_missing_prerequisites_for_report tests/test_chat_workbench_contracts.py::test_supervisor_decision_prefers_profile_for_first_demo_prompt tests/test_graph_vertical_slice.py::test_graph_state_records_supervisor_decision_and_business_agent tests/test_graph_vertical_slice.py::test_missing_prerequisites_do_not_execute_target_agent tests/test_graph_vertical_slice.py::test_supervisor_uses_active_chain_kinds_before_thread_history
 ```
 
 Expected: PASS.
@@ -1087,6 +1177,41 @@ def test_update_context_from_artifacts_only_updates_created_kinds(tmp_path):
     assert context.updated_by_run_id == "run-1"
 
 
+def test_new_job_invalidates_downstream_active_chain(tmp_path):
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("job_analysis", "job-first", {"content": {}}, "thread-a", "job")
+    artifact_repo.save("match", "match-first", {"content": {}}, "thread-a", "match")
+    artifact_repo.save("plan", "plan-first", {"content": {}}, "thread-a", "planning")
+    artifact_repo.save("training_result", "training-first", {"content": {}}, "thread-a", "training")
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-a",
+            active_goal="第一条链",
+            active_job_analysis_id="job-first",
+            active_match_id="match-first",
+            active_plan_id="plan-first",
+            active_training_result_id="training-first",
+            updated_by_run_id="run-first",
+        )
+    )
+    artifact_repo.save("job_analysis", "job-second", {"content": {}}, "thread-a", "job")
+
+    context = update_context_from_artifacts(
+        thread_id="thread-a",
+        run_id="run-second",
+        created_artifact_ids=["job-second"],
+        active_goal="第二条链",
+        artifact_repo=artifact_repo,
+        context_repo=context_repo,
+    )
+
+    assert context.active_job_analysis_id == "job-second"
+    assert context.active_match_id is None
+    assert context.active_plan_id is None
+    assert context.active_training_result_id is None
+
+
 def test_artifact_chain_from_context_ignores_missing_optional_ids(tmp_path):
     artifact_repo = JsonArtifactRepository(tmp_path)
     artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-a", "profile")
@@ -1120,6 +1245,7 @@ Create `backend/app/services/workspace.py`:
 ```python
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.repositories.interfaces import ArtifactRepository
@@ -1139,6 +1265,38 @@ CONTEXT_FIELD_BY_KIND = {
 }
 
 
+INVALIDATE_DOWNSTREAM = {
+    "profile": [
+        "active_job_analysis_id",
+        "active_match_id",
+        "active_plan_id",
+        "active_training_result_id",
+        "active_interview_summary_id",
+        "active_report_id",
+    ],
+    "job_analysis": [
+        "active_match_id",
+        "active_plan_id",
+        "active_training_result_id",
+        "active_interview_summary_id",
+        "active_report_id",
+    ],
+    "match": [
+        "active_plan_id",
+        "active_training_result_id",
+        "active_interview_summary_id",
+        "active_report_id",
+    ],
+    "plan": [
+        "active_training_result_id",
+        "active_interview_summary_id",
+        "active_report_id",
+    ],
+    "training_result": ["active_interview_summary_id", "active_report_id"],
+    "interview_summary": ["active_report_id"],
+}
+
+
 def update_context_from_artifacts(
     thread_id: str,
     run_id: str,
@@ -1155,10 +1313,13 @@ def update_context_from_artifacts(
     }
     values["active_goal"] = active_goal or values.get("active_goal") or "职业发展规划"
     values["updated_by_run_id"] = run_id
+    values["updated_at"] = datetime.now(timezone.utc)
     for artifact_id in created_artifact_ids:
         artifact = artifact_repo.get(artifact_id)
         if artifact.get("source_thread_id") != thread_id:
             continue
+        for downstream_field in INVALIDATE_DOWNSTREAM.get(str(artifact.get("kind")), []):
+            values[downstream_field] = None
         field_name = CONTEXT_FIELD_BY_KIND.get(artifact.get("kind"))
         if field_name:
             values[field_name] = artifact_id
@@ -1313,11 +1474,39 @@ def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_pa
     assert payload["supervisor_decision"]["intent"] == "build_profile"
     assert payload["workspace_delta"]["updated_context"]["active_profile_id"]
     assert payload["artifact_chain"][0]["kind"] == "profile"
+    assert payload["memory_updates"]
 
     messages = JsonConversationRepository(tmp_path).list_by_thread("thread-v31-run")
     assert [message.role.value for message in messages] == ["user", "assistant"]
     assert messages[1].artifact_refs == payload["assistant_message"]["artifact_refs"]
     assert JsonWorkspaceContextRepository(tmp_path).get("thread-v31-run").active_profile_id
+
+
+def test_runs_endpoint_persists_assistant_error_message_on_permission_denied(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.agents.runtime import PermissionDenied
+    from app.repositories.json_thread_repository import JsonConversationRepository
+    from app.services import run_orchestrator
+
+    def deny(*args, **kwargs):
+        raise PermissionDenied("training cannot write match")
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(run_orchestrator, "run_career_graph", deny)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        json={"thread_id": "thread-permission-error", "message": "请做 match 分析"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "permission_denied"
+    assert payload["assistant_message"]["role"] == "assistant"
+    assert payload["retryable"] is False
+    messages = JsonConversationRepository(tmp_path).list_by_thread("thread-permission-error")
+    assert [message.role.value for message in messages] == ["user", "assistant"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1325,7 +1514,7 @@ def test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract(tmp_pa
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied
 ```
 
 Expected: FAIL because `/api/runs` does not return v3.1 fields or persist messages.
@@ -1340,10 +1529,16 @@ def run_career_graph(
     message: str,
     artifact_repo: ArtifactRepository,
     run_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[AgentTraceItem]]:
     graph = get_runtime_graph(artifact_repo)
     config = {"configurable": {"thread_id": thread_id}}
-    state = graph.invoke({"thread_id": thread_id, "user_message": message, "metadata": {"run_id": run_id}}, config=config)
+    initial_metadata = dict(metadata or {})
+    initial_metadata["run_id"] = run_id
+    state = graph.invoke(
+        {"thread_id": thread_id, "user_message": message, "metadata": initial_metadata},
+        config=config,
+    )
     snapshots = state.get("agent_snapshots", {})
     trace = [
         AgentTraceItem(
@@ -1368,9 +1563,10 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from app.agents.runtime import PermissionDenied
 from app.graphs.workflow import run_career_graph
 from app.repositories.json_repository import JsonArtifactRepository
-from app.repositories.json_thread_repository import JsonConversationRepository, JsonWorkspaceContextRepository
+from app.repositories.json_thread_repository import JsonConversationRepository, JsonMemoryRepository, JsonWorkspaceContextRepository
 from app.schemas.runs import (
     ArtifactChainItem,
     ConversationMessage,
@@ -1378,6 +1574,7 @@ from app.schemas.runs import (
     RunResponse,
     RunStatus,
     SupervisorDecision,
+    WorkspaceContext,
     WorkspaceDelta,
 )
 from app.services.workspace import artifact_chain_from_context, update_context_from_artifacts
@@ -1388,6 +1585,7 @@ class RunOrchestrator:
         self.artifact_repo = JsonArtifactRepository(root)
         self.message_repo = JsonConversationRepository(root)
         self.context_repo = JsonWorkspaceContextRepository(root)
+        self.memory_repo = JsonMemoryRepository(root)
 
     def run(self, thread_id: str, message: str) -> RunResponse:
         run_id = f"run-{uuid4().hex[:12]}"
@@ -1401,7 +1599,38 @@ class RunOrchestrator:
         self.message_repo.save(user_message)
 
         before_ids = {artifact["id"] for artifact in self.artifact_repo.list_by_thread(thread_id)}
-        state, trace = run_career_graph(thread_id, message, self.artifact_repo, run_id=run_id)
+        current_context = self.context_repo.get(thread_id)
+        current_chain = artifact_chain_from_context(current_context, self.artifact_repo) if current_context else []
+        active_artifact_kinds = [item.kind for item in current_chain]
+        try:
+            state, trace = run_career_graph(
+                thread_id,
+                message,
+                self.artifact_repo,
+                run_id=run_id,
+                metadata={
+                    "active_artifact_kinds": active_artifact_kinds,
+                    "active_context": current_context.model_dump(mode="json") if current_context else None,
+                },
+            )
+        except PermissionDenied as exc:
+            return self._error_response(
+                thread_id=thread_id,
+                run_id=run_id,
+                content="当前 Agent 没有权限执行该操作。",
+                run_status=RunStatus.PERMISSION_DENIED,
+                retryable=False,
+                warning=str(exc),
+            )
+        except Exception as exc:
+            return self._error_response(
+                thread_id=thread_id,
+                run_id=run_id,
+                content="本轮处理失败，请稍后重试。",
+                run_status=RunStatus.FAILED,
+                retryable=True,
+                warning=str(exc),
+            )
         after_refs = self.artifact_repo.list_by_thread(thread_id)
         created_ids = [artifact["id"] for artifact in after_refs if artifact["id"] not in before_ids]
         decision_payload = state.get("metadata", {}).get("supervisor_decision") or state.get("supervisor_decision")
@@ -1434,6 +1663,13 @@ class RunOrchestrator:
             warnings=state.get("warnings", []),
         )
         self.message_repo.save(assistant_message)
+        memory_updates = self._save_memory_candidates(
+            thread_id=thread_id,
+            run_id=run_id,
+            source_message_id=user_message.id,
+            message=message,
+            supervisor_decision=supervisor_decision,
+        )
         compaction_snapshot = _latest_compaction(chain, self.artifact_repo)
 
         return RunResponse(
@@ -1447,6 +1683,7 @@ class RunOrchestrator:
             supervisor_decision=supervisor_decision,
             agent_trace_summary=trace,
             used_skill_refs=state.get("loaded_skill_refs", []),
+            used_skill_runtime_refs=state.get("loaded_skill_runtime_refs", []),
             artifacts=after_refs,
             artifact_chain=chain,
             workspace_delta=WorkspaceDelta(
@@ -1456,11 +1693,76 @@ class RunOrchestrator:
                 updated_context=context,
             ),
             compaction_snapshot=compaction_snapshot,
+            memory_updates=memory_updates,
             blocking_reason=_blocking_reason(supervisor_decision),
             missing_artifacts=supervisor_decision.missing_prerequisites if supervisor_decision else [],
             retryable=False,
             next_actions=supervisor_decision.next_actions if supervisor_decision else ["继续职业工作流"],
             warnings=state.get("warnings", []),
+        )
+
+    def _save_memory_candidates(
+        self,
+        thread_id: str,
+        run_id: str,
+        source_message_id: str,
+        message: str,
+        supervisor_decision: SupervisorDecision | None,
+    ) -> list[MemoryItem]:
+        if supervisor_decision is None:
+            return self.memory_repo.list_by_thread(thread_id)
+        candidates: list[MemoryItem] = []
+        if supervisor_decision.intent.value in {"build_profile", "analyze_job", "match", "plan"}:
+            memory = MemoryItem(
+                id=f"memory-{uuid4().hex[:12]}",
+                thread_id=thread_id,
+                scope=MemoryScope.GOAL,
+                fact=message[:160],
+                source_message_id=source_message_id,
+                confidence=0.72,
+                status=MemoryStatus.PENDING_CONFIRMATION,
+            )
+            candidates.append(self.memory_repo.save(memory))
+        return self.memory_repo.list_by_thread(thread_id)
+
+    def _error_response(
+        self,
+        thread_id: str,
+        run_id: str,
+        content: str,
+        run_status: RunStatus,
+        retryable: bool,
+        warning: str,
+    ) -> RunResponse:
+        context = self.context_repo.get(thread_id) or self.context_repo.save(
+            WorkspaceContext(thread_id=thread_id, active_goal="职业发展规划", updated_by_run_id=run_id)
+        )
+        chain = artifact_chain_from_context(context, self.artifact_repo)
+        assistant_message = ConversationMessage(
+            id=f"msg-{uuid4().hex[:12]}",
+            thread_id=thread_id,
+            role=ConversationRole.ASSISTANT,
+            content=content,
+            run_id=run_id,
+            artifact_refs=[],
+            current_runtime_node="error",
+            warnings=[warning],
+        )
+        self.message_repo.save(assistant_message)
+        return RunResponse(
+            run_id=run_id,
+            thread_id=thread_id,
+            run_status=run_status,
+            active_agent="supervisor",
+            current_runtime_node="error",
+            assistant_message=assistant_message,
+            artifacts=self.artifact_repo.list_by_thread(thread_id),
+            artifact_chain=chain,
+            workspace_delta=WorkspaceDelta(created_artifacts=[], updated_context=context),
+            memory_updates=self.memory_repo.list_by_thread(thread_id),
+            retryable=retryable,
+            next_actions=["重试本轮请求"] if retryable else ["调整请求后继续"],
+            warnings=[warning],
         )
 
 
@@ -1528,7 +1830,7 @@ def create_run(request: RunRequest) -> RunResponse:
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_runs_endpoint_persists_messages_and_returns_v31_runtime_contract tests/test_api_e2e.py::test_runs_endpoint_persists_assistant_error_message_on_permission_denied
 ```
 
 Expected: PASS.
@@ -1572,6 +1874,7 @@ def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monke
     workspace = client.get("/api/threads/thread-workspace-api/workspace")
     messages = client.get("/api/threads/thread-workspace-api/messages")
     artifacts = client.get("/api/threads/thread-workspace-api/artifacts")
+    memory = client.get("/api/threads/thread-workspace-api/memory")
 
     assert workspace.status_code == 200
     assert workspace.json()["active_context"]["active_profile_id"]
@@ -1579,6 +1882,8 @@ def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monke
     assert [message["role"] for message in messages.json()] == ["user", "assistant"]
     assert artifacts.status_code == 200
     assert any(artifact["kind"] == "profile" for artifact in artifacts.json())
+    assert memory.status_code == 200
+    assert isinstance(memory.json(), list)
 
 
 def test_memory_confirm_and_reject_endpoints_update_status(tmp_path: Path, monkeypatch) -> None:
@@ -1606,6 +1911,27 @@ def test_memory_confirm_and_reject_endpoints_update_status(tmp_path: Path, monke
     assert confirmed.json()["status"] == "confirmed"
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
+
+
+def test_report_export_updates_active_report_context(tmp_path: Path, monkeypatch) -> None:
+    from app.api import reports, runs, threads
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(threads, "RUNTIME_DATA_DIR", tmp_path)
+    monkeypatch.setattr(reports, "RUNTIME_DATA_DIR", tmp_path)
+    client = TestClient(app)
+    thread_id = "thread-report-context"
+
+    for message in complete_demo_messages("REPORT_CONTEXT"):
+        response = client.post("/api/runs", json={"thread_id": thread_id, "message": message})
+        assert response.status_code == 200
+
+    report = client.get(f"/api/reports/{thread_id}/markdown")
+
+    assert report.status_code == 200
+    context = JsonWorkspaceContextRepository(tmp_path).get(thread_id)
+    assert context.active_report_id == f"report-{thread_id}-latest"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1613,7 +1939,7 @@ def test_memory_confirm_and_reject_endpoints_update_status(tmp_path: Path, monke
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_report_export_updates_active_report_context
 ```
 
 Expected: FAIL with 404 for `/api/threads/thread-workspace-api/workspace` and `/api/threads/thread-memory-api/memory/memory-api-1/confirm`.
@@ -1623,7 +1949,7 @@ Expected: FAIL with 404 for `/api/threads/thread-workspace-api/workspace` and `/
 Create `backend/app/api/threads.py`:
 
 ```python
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Path
 
@@ -1657,9 +1983,14 @@ def get_messages(thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)]
     return JsonConversationRepository(RUNTIME_DATA_DIR).list_by_thread(thread_id)
 
 
-@router.get("/{thread_id}/artifacts")
-def get_artifacts(thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)]) -> list[dict[str, str]]:
+@router.get("/{thread_id}/artifacts", response_model=list[dict[str, Any]])
+def get_artifacts(thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)]) -> list[dict[str, Any]]:
     return JsonArtifactRepository(RUNTIME_DATA_DIR).list_by_thread(thread_id)
+
+
+@router.get("/{thread_id}/memory", response_model=list[MemoryItem])
+def get_memory(thread_id: Annotated[str, Path(pattern=SAFE_THREAD_ID_PATTERN)]) -> list[MemoryItem]:
+    return JsonMemoryRepository(RUNTIME_DATA_DIR).list_by_thread(thread_id)
 
 
 @router.post("/{thread_id}/memory/{memory_id}/confirm", response_model=MemoryItem)
@@ -1705,7 +2036,7 @@ from app.artifacts.markdown import (
     required_parent_artifact_ids_from_chain,
 )
 from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
-from app.services.workspace import artifact_chain_from_context
+from app.services.workspace import artifact_chain_from_context, update_context_from_artifacts
 
 
 context = JsonWorkspaceContextRepository(RUNTIME_DATA_DIR).get(thread_id)
@@ -1721,14 +2052,40 @@ except MissingArtifactError as exc:
     raise HTTPException(status_code=409, detail=str(exc)) from exc
 ```
 
-Keep saving `report-{thread_id}-latest` with `source_agent="report"` and parent ids from the active chain.
+Keep saving `report-{thread_id}-latest` with `source_agent="report"` and parent ids from the active chain. After saving the report artifact, update the active context so the workspace report tab and artifact chain include it:
+
+```python
+report_artifact_id = f"report-{thread_id}-latest"
+repo.save(
+    kind="report",
+    artifact_id=report_artifact_id,
+    payload={
+        "title": "CareerAgent Markdown report",
+        "format": "markdown",
+        "content": markdown,
+    },
+    source_thread_id=thread_id,
+    source_agent="report",
+    parent_artifact_ids=parent_artifact_ids,
+)
+context_repo = JsonWorkspaceContextRepository(RUNTIME_DATA_DIR)
+current_context = context_repo.get(thread_id)
+update_context_from_artifacts(
+    thread_id=thread_id,
+    run_id=f"report-export-{thread_id}",
+    created_artifact_ids=[report_artifact_id],
+    active_goal=current_context.active_goal if current_context else "职业发展报告",
+    artifact_repo=repo,
+    context_repo=context_repo,
+)
+```
 
 - [ ] **Step 6: Run API tests**
 
 Run:
 
 ```bash
-cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_complete_backend_loop_exports_isolated_markdown_reports
+cd backend && .venv/bin/python -m pytest -q tests/test_api_e2e.py::test_threads_workspace_and_messages_restore_chat_state tests/test_api_e2e.py::test_memory_confirm_and_reject_endpoints_update_status tests/test_api_e2e.py::test_report_export_updates_active_report_context tests/test_api_e2e.py::test_complete_backend_loop_exports_isolated_markdown_reports
 ```
 
 Expected: PASS.
@@ -1902,7 +2259,7 @@ def _section_ids_for_intent(intent: str) -> list[str]:
     return ["summary"]
 ```
 
-- [ ] **Step 5: Preserve graph state bounded refs**
+- [ ] **Step 5: Connect SkillRuntimeRef to business agent runtime**
 
 In `CareerAgentState`, add:
 
@@ -1910,7 +2267,24 @@ In `CareerAgentState`, add:
 loaded_skill_runtime_refs: list[dict[str, Any]] = Field(default_factory=list)
 ```
 
-In `run_business_agent()`, after resolving skills in a later task, store `runtime_ref.model_dump(mode="json")` instead of raw skill bodies. For this task, keep existing `loaded_skill_refs` and add a small helper that can be used by future tasks:
+In `backend/app/agents/runtime.py`, import `SkillLoader` and replace the static manifest-only skill selection in `run_business_agent()`:
+
+```python
+from app.skills.loader import SkillLoader
+```
+
+```python
+decision = state.metadata.get("supervisor_decision", {})
+intent = decision.get("intent", "default") if isinstance(decision, dict) else "default"
+loaded_skills = SkillLoader.builtin().resolve_for_agent(agent_id, str(intent), budget=1200)
+skill_refs = [skill.ref for skill in loaded_skills]
+append_skill_runtime_refs(
+    state,
+    [skill.runtime_ref.model_dump(mode="json") for skill in loaded_skills],
+)
+```
+
+Keep artifact payloads storing `skill_refs`, not full skill bodies. Add the helper:
 
 ```python
 def append_skill_runtime_refs(state: CareerAgentState, refs: list[dict[str, Any]]) -> None:
@@ -1918,6 +2292,12 @@ def append_skill_runtime_refs(state: CareerAgentState, refs: list[dict[str, Any]
     for ref in refs:
         if ref.get("skill_id") not in existing_ids:
             state.loaded_skill_runtime_refs.append(ref)
+```
+
+In `backend/app/services/run_orchestrator.py`, include runtime refs in the response:
+
+```python
+used_skill_runtime_refs=state.get("loaded_skill_runtime_refs", []),
 ```
 
 - [ ] **Step 6: Run memory and skill tests**
@@ -2060,7 +2440,8 @@ export interface ConversationMessage {
 export interface SupervisorDecision {
   intent: string;
   target_agent: string;
-  required_artifact_kinds: string[];
+  required_input_artifact_kinds: string[];
+  expected_output_artifact_kinds: string[];
   missing_prerequisites: string[];
   user_facing_reason: string;
   next_actions: string[];
@@ -2092,6 +2473,25 @@ export interface WorkspaceResponse {
   workspace_artifacts: Record<string, Record<string, unknown>>;
   artifact_chain: ArtifactChainItem[];
 }
+
+export interface SkillRuntimeRef {
+  skill_id: string;
+  version: string;
+  section_ids: string[];
+  detail_level: "summary" | "full" | "skipped";
+  summary_digest: string;
+}
+
+export interface MemoryItem {
+  id: string;
+  thread_id: string;
+  scope: "profile" | "preference" | "goal" | "skill" | "evidence";
+  fact: string;
+  confidence: number;
+  status: "confirmed" | "pending_confirmation" | "rejected";
+  source_artifact_id?: string;
+  source_message_id?: string;
+}
 ```
 
 Extend `RunResponse`:
@@ -2108,6 +2508,7 @@ export interface RunResponse {
   supervisor_decision?: SupervisorDecision;
   agent_trace_summary: AgentTraceItem[];
   used_skill_refs: string[];
+  used_skill_runtime_refs: SkillRuntimeRef[];
   artifacts: ArtifactRef[];
   artifact_chain: ArtifactChainItem[];
   workspace_delta?: {
@@ -2115,6 +2516,7 @@ export interface RunResponse {
     updated_context: WorkspaceContext;
   };
   compaction_snapshot?: Record<string, unknown>;
+  memory_updates: MemoryItem[];
   blocking_reason?: string;
   missing_artifacts: string[];
   retryable: boolean;
@@ -2233,6 +2635,7 @@ export const useWorkbenchStore = defineStore("workbench", {
       this.error = "";
       try {
         this.reportMarkdown = await downloadReport(this.threadId);
+        await this.refreshThread();
       } catch (error) {
         this.error = error instanceof Error ? error.message : "报告导出失败";
       }
@@ -2307,7 +2710,7 @@ function submit() {
 
     <section class="quick-prompts">
       <el-button
-        v-for="prompt in quickPrompts.slice(0, 7)"
+        v-for="prompt in quickPrompts"
         :key="prompt"
         size="small"
         :disabled="running"
@@ -2547,14 +2950,33 @@ defineProps<{
 
     <template v-if="demoMode">
       <el-divider />
+      <h3>Skill Runtime Refs</h3>
+      <div v-if="lastRun?.used_skill_runtime_refs?.length" class="chain-list">
+        <div v-for="skill in lastRun.used_skill_runtime_refs" :key="skill.skill_id" class="chain-row">
+          <el-tag size="small">{{ skill.detail_level }}</el-tag>
+          <span>{{ skill.skill_id }} · {{ skill.summary_digest }}</span>
+        </div>
+      </div>
+
       <h3>Artifact Chain</h3>
       <div v-if="workspace?.artifact_chain.length" class="chain-list">
         <div v-for="item in workspace.artifact_chain" :key="item.id" class="chain-row">
           <el-tag size="small">{{ item.kind }}</el-tag>
-          <span>{{ item.id }}</span>
+          <span>{{ item.id }} ← {{ item.parent_artifact_ids.join(", ") || "root" }}</span>
         </div>
       </div>
       <el-empty v-else description="暂无链路" :image-size="48" />
+
+      <h3>Compaction</h3>
+      <pre v-if="lastRun?.compaction_snapshot" class="runtime-json">{{ lastRun.compaction_snapshot }}</pre>
+
+      <h3>Memory Updates</h3>
+      <div v-if="lastRun?.memory_updates?.length" class="chain-list">
+        <div v-for="memory in lastRun.memory_updates" :key="memory.id" class="chain-row">
+          <el-tag size="small">{{ memory.status }}</el-tag>
+          <span>{{ memory.fact }}</span>
+        </div>
+      </div>
 
       <h3>Warnings</h3>
       <el-alert
@@ -2602,6 +3024,14 @@ defineProps<{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.runtime-json {
+  max-height: 160px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f5f7fb;
+  padding: 10px;
+  white-space: pre-wrap;
 }
 </style>
 ```
@@ -2872,12 +3302,15 @@ Expected: only the unrelated `agent申报书date20260511.docx` remains untracked
 
 - Spec coverage:
   - Active Workspace Context: Tasks 1, 2, 4, 5, 6, 10.
+  - Active chain downstream invalidation: Task 4.
+  - Supervisor active-chain prerequisite checks: Tasks 3 and 5.
   - ConversationMessage persistence: Tasks 1, 2, 5, 6, 9, 10.
   - SupervisorDecision: Tasks 1, 3, 5, 9, 10.
   - run_status: Tasks 1, 5, 8, 9, 10.
+  - Permission/failure error messages: Task 5.
   - workspace/messages API: Tasks 2, 4, 5, 6.
   - Runtime student/demo modes: Tasks 9, 10, 11.
-  - Memory repository and confirmation: Tasks 1, 2, 6, 7.
+  - Memory repository, memory updates, and confirmation: Tasks 1, 2, 5, 6, 7.
   - Compaction safety: Tasks 1, 7, 11.
   - Progressive Skill loading refs: Tasks 1, 7.
   - v2.1 gates: Tasks 3, 4, 5, 6, 8, 11.
