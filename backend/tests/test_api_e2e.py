@@ -255,6 +255,47 @@ def test_report_run_returns_bounded_skill_runtime_refs(tmp_path: Path, monkeypat
     assert all("content" not in ref for ref in report_refs)
 
 
+def test_report_run_uses_active_artifact_chain_when_thread_has_later_nonactive_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from app.api import runs
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    thread_id = "thread-report-active-chain"
+    _seed_report_chain(tmp_path, thread_id, training_score=82, turn_count=3)
+    repo = JsonArtifactRepository(tmp_path)
+    repo.save(
+        "interview_summary",
+        "interview-nonactive-later",
+        {
+            "content": {
+                "turn_count": 1,
+                "completed": False,
+                "answers": ["newer non-active answer"],
+            }
+        },
+        thread_id,
+        "interview",
+        [f"training-{thread_id}"],
+    )
+    client = TestClient(app)
+
+    response = client.post("/api/runs", json={"thread_id": thread_id, "message": "请导出 Markdown 报告"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_status"] == "completed"
+    assert not any("Missing required artifact chain" in warning for warning in payload["warnings"])
+    report_artifacts = repo.list_by_kind(thread_id, "report")
+    assert len(report_artifacts) == 1
+    report = repo.get(report_artifacts[0]["id"])
+    assert f"interview-{thread_id}" in report["parent_artifact_ids"]
+    assert "interview-nonactive-later" not in report["parent_artifact_ids"]
+    assert "answer-3" in report["payload"]["content"]
+    assert "newer non-active answer" not in report["payload"]["content"]
+
+
 def test_threads_workspace_and_messages_restore_chat_state(tmp_path: Path, monkeypatch) -> None:
     from app.api import reports, runs, threads
 

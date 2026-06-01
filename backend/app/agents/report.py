@@ -2,7 +2,13 @@ from typing import Any
 
 from app.agents.manifests import AGENT_MANIFESTS
 from app.agents.runtime import append_skill_runtime_refs, coerce_state, make_runtime, next_artifact_id
-from app.artifacts.markdown import MissingArtifactError, build_markdown_report, required_parent_artifact_ids
+from app.artifacts.markdown import (
+    MissingArtifactError,
+    build_markdown_report,
+    build_markdown_report_from_chain,
+    required_parent_artifact_ids,
+    required_parent_artifact_ids_from_chain,
+)
 from app.graphs.state import AgentSnapshot
 from app.repositories.interfaces import ArtifactRepository
 from app.skills.loader import SkillLoader
@@ -14,10 +20,14 @@ def report_node(state: dict[str, Any], artifact_repo: ArtifactRepository) -> dic
     skill_refs = AGENT_MANIFESTS["report"].skill_policy.default_skill_ids
     loaded_skills = SkillLoader.builtin().resolve_for_agent("report", _current_intent(career_state), budget=1200)
     skill_runtime_refs = [skill.runtime_ref for skill in loaded_skills]
-    artifacts = [runtime.get_artifact(artifact["id"]) for artifact in runtime.list_artifacts()]
+    artifacts = _active_report_artifacts(career_state, runtime)
     try:
-        content = build_markdown_report(career_state.thread_id, artifacts)
-        parent_artifact_ids = required_parent_artifact_ids(career_state.thread_id, artifacts)
+        if _has_active_artifact_ids(career_state):
+            content = build_markdown_report_from_chain(career_state.thread_id, artifacts)
+            parent_artifact_ids = required_parent_artifact_ids_from_chain(career_state.thread_id, artifacts)
+        else:
+            content = build_markdown_report(career_state.thread_id, artifacts)
+            parent_artifact_ids = required_parent_artifact_ids(career_state.thread_id, artifacts)
     except MissingArtifactError as exc:
         career_state.loaded_skill_refs = _append_unique(career_state.loaded_skill_refs, skill_refs)
         career_state.loaded_skill_runtime_refs = append_skill_runtime_refs(
@@ -75,6 +85,22 @@ def _current_intent(state) -> str:
     if isinstance(decision, dict) and decision.get("intent"):
         return str(decision["intent"])
     return "export_report"
+
+
+def _active_report_artifacts(state, runtime) -> list[dict[str, Any]]:
+    active_artifact_ids = state.metadata.get("active_artifact_ids")
+    if isinstance(active_artifact_ids, list):
+        active_ids = {str(artifact_id) for artifact_id in active_artifact_ids}
+        return [
+            runtime.get_artifact(artifact["id"])
+            for artifact in runtime.list_artifacts()
+            if artifact["id"] in active_ids
+        ]
+    return [runtime.get_artifact(artifact["id"]) for artifact in runtime.list_artifacts()]
+
+
+def _has_active_artifact_ids(state) -> bool:
+    return isinstance(state.metadata.get("active_artifact_ids"), list)
 
 
 def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
