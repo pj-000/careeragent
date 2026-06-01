@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import DemoLoopView from "./views/DemoLoopView.vue";
+import ChatWorkbenchView from "./views/ChatWorkbenchView.vue";
 </script>
 
 <template>
-  <DemoLoopView />
+  <ChatWorkbenchView />
 </template>
 
 <style>
