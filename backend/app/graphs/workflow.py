@@ -94,6 +94,8 @@ def run_career_graph_state(
         "thread_id": thread_id,
         "user_message": message,
         "metadata": initial_metadata,
+        "pending_question": None,
+        "warnings": [],
     }
     active_artifact_ids = initial_metadata.get("active_artifact_ids")
     if isinstance(active_artifact_ids, list):

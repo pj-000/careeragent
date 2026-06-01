@@ -425,6 +425,61 @@ def test_start_interview_requires_submitted_training_result(tmp_path: Path, monk
     assert JsonArtifactRepository(tmp_path).list_by_kind("thread-training-gate", "interview_summary") == []
 
 
+def test_resolved_capability_warning_does_not_carry_into_later_runs(tmp_path: Path, monkeypatch) -> None:
+    from app.api import runs
+    from app.repositories.json_repository import JsonArtifactRepository
+    from app.repositories.json_thread_repository import JsonWorkspaceContextRepository
+    from app.schemas.runs import WorkspaceContext
+
+    monkeypatch.setattr(runs, "RUNTIME_DATA_DIR", tmp_path)
+    artifact_repo = JsonArtifactRepository(tmp_path)
+    context_repo = JsonWorkspaceContextRepository(tmp_path)
+    artifact_repo.save("profile", "profile-1", {"content": {}}, "thread-warning-reset", "profile")
+    artifact_repo.save("job_analysis", "job-1", {"content": {}}, "thread-warning-reset", "job")
+    artifact_repo.save("match", "match-1", {"content": {}}, "thread-warning-reset", "match")
+    artifact_repo.save("plan", "plan-1", {"content": {}}, "thread-warning-reset", "planning")
+    artifact_repo.save(
+        "training_result",
+        "training-1",
+        {"content": {"task": "写一个 Agent demo", "has_submission": False, "score": None}},
+        "thread-warning-reset",
+        "training",
+    )
+    context_repo.save(
+        WorkspaceContext(
+            thread_id="thread-warning-reset",
+            active_goal="Agent 开发工程师",
+            active_profile_id="profile-1",
+            active_job_analysis_id="job-1",
+            active_match_id="match-1",
+            active_plan_id="plan-1",
+            active_training_result_id="training-1",
+            updated_by_run_id="seed",
+        )
+    )
+    client = TestClient(app)
+
+    blocked_response = client.post("/api/runs", json={"thread_id": "thread-warning-reset", "message": "开始模拟面试"})
+    resolved_response = client.post(
+        "/api/runs",
+        json={
+            "thread_id": "thread-warning-reset",
+            "message": "我的训练答案：我会设计 FastAPI + LangGraph demo。",
+        },
+    )
+
+    assert blocked_response.status_code == 200
+    assert blocked_response.json()["missing_capabilities"] == ["training_scored"]
+    assert resolved_response.status_code == 200
+    payload = resolved_response.json()
+    assert payload["run_status"] == "completed"
+    assert payload["missing_capabilities"] == []
+    assert not any("Missing required capabilities" in warning for warning in payload["warnings"])
+    assert not any(
+        "Missing required capabilities" in warning for warning in payload["assistant_message"]["warnings"]
+    )
+
+
 def test_blocked_match_request_does_not_create_memory_candidate(tmp_path: Path, monkeypatch) -> None:
     from app.api import runs
     from app.repositories.json_thread_repository import JsonMemoryRepository

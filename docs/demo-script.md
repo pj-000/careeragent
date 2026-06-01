@@ -63,3 +63,13 @@ Job Agent 会加载岗位分析相关 Skill，特别是 Agent 开发岗位参考
 ## 演示结束语
 
 这就是 CareerAgent MVP 的核心价值：前端看到的是学生职业发展闭环，后端证明的是 FastAPI、Vue 3、LangGraph strict multi-agent、Skills、Memory / Compaction、Provider DTO 和本地 JSON artifacts 的完整协作。
+
+## v3.1 Chat Workbench 演示路径
+
+1. 打开前端工作台，确认页面直接进入职业规划工作区，而不是营销页。
+2. 在右侧对话栏输入：“我会 Python FastAPI，想匹配 Agent 开发岗位。”
+3. 观察中间画像 tab 出现 profile artifact，演示模式下 Runtime Drawer 显示业务 Agent 和最终 `memory_manager` 节点。
+4. 继续输入自定义 JD，请求匹配、规划、训练任务、训练答案、三轮面试和报告。
+5. 在只有训练任务、尚未提交训练答案时尝试开始面试，确认系统提示需要先提交训练答案并完成评分。
+6. 切换到演示模式，展示 active artifact chain、parent relationships、used skills、compaction snapshot。
+7. 导出 Markdown 报告，说明报告读取 active workspace context，不混用同线程其他目标岗位的历史 artifact。
